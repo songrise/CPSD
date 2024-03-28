@@ -1,0 +1,9 @@
+.autodl
+.vscode
+*.png
+*.jpg
+*.jpeg
+data/
+*.ckpt
+*.pt
+*.DS_Store

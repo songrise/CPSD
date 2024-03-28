@@ -1,0 +1,5 @@
+config:
+  experiment_name: "camel"
+  init_img: "/root/autodl-tmp/style-aligned/example_image/camel.png"
+  ddim_steps: 100 # we use 999 steps for the best reconstruction
+  save_feature_timesteps: 50

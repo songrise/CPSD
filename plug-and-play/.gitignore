@@ -1,0 +1,17 @@
+.DS_STORE
+.idea
+
+.autodl
+.vscode
+*.png
+*.jpg
+*.jpeg
+data/
+*.ckpt
+*.pt
+
+#cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
