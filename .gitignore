@@ -7,3 +7,5 @@ data/
 *.ckpt
 *.pt
 *.DS_Store
+*.yaml
+*.out

@@ -367,15 +367,23 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
         value = attn.to_v(encoder_hidden_states, *args)
         # inject here, swap the q k
         batch_size = query.shape[0] // 2  # 2 since CFG is used
-        if self.share_enabled and batch_size > 1:  # when == 1, no need to inject, ty
+        if self.share_enabled and batch_size > 1:  # when == 1, no need to inject,
             ref_q_uncond, ref_q_cond = query[0, ...].unsqueeze(0), query[
                 1, ...
             ].unsqueeze(0)
             ref_k_uncond, ref_k_cond = key[0, ...].unsqueeze(0), key[1, ...].unsqueeze(
                 0
             )
-            query = torch.cat([ref_q_uncond, ref_q_cond] * batch_size, dim=0)
-            key = torch.cat([ref_k_uncond, ref_k_cond] * batch_size, dim=0)
+            # temp, also share the value
+            ref_v_uncond, ref_v_cond = value[0, ...].unsqueeze(0), value[
+                1, ...
+            ].unsqueeze(0)
+            if self.inject_query:
+                query = torch.cat([ref_q_uncond, ref_q_cond] * batch_size, dim=0)
+            if self.inject_key:
+                key = torch.cat([ref_k_uncond, ref_k_cond] * batch_size, dim=0)
+            if self.inject_value:
+                value = torch.cat([ref_v_uncond, ref_v_cond] * batch_size, dim=0)
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
@@ -621,6 +629,11 @@ def register_attention_processors(
     base_dir: str,
     share_resblock: bool = True,
     share_attn: bool = True,
+    share_attn_layers: Optional[int] = None,
+    share_resnet_layers: Optional[int] = None,
+    share_query: bool = True,
+    share_key: bool = True,
+    share_value: bool = True,
 ):
     if mode == "dump":
         if os.path.exists(base_dir):
@@ -634,29 +647,25 @@ def register_attention_processors(
     up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[
         1:
     ]  # skip the first block, which is UpBlock2D
-    block_idx = 1
-    selfattn_id = 0
+    layer_idx_attn = 0
+    layer_idx_resnet = 0
     for block in up_blocks:
         # each block should have 3 transformer layer
         #  transformer_layer : transformer_2d.Transformer2DModel
         if share_resblock:
-            if block_idx == 1:  # only share the first block
+            if share_resnet_layers is not None:
                 resnet_wrappers = []
                 resnets = block.resnets
-                resnet_id = 0
                 for resnet_block in resnets:
-                    resnet_id += 1
-                    if resnet_id == 1:
+                    if layer_idx_resnet not in share_resnet_layers:
                         resnet_wrappers.append(resnet_block)
                     else:
                         resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
-                        print(
-                            f"Share resnet feature set for block {block_idx}, layer {resnet_id}"
-                        )
+                        print(f"Share resnet feature set for layer {layer_idx_resnet}")
+                    layer_idx_resnet += 1
                 block.resnets = nn.ModuleList(resnet_wrappers)
         if share_attn:
             for transformer_layer in block.attentions:
-                selfattn_id += 1
                 transformer_block: attention.BasicTransformerBlock = (
                     transformer_layer.transformer_blocks[0]
                 )
@@ -671,7 +680,7 @@ def register_attention_processors(
                     )
                     self_attn.set_processor(dump_processor)
                     print(
-                        f"Dump processor set for self-attention in block {block_idx}, layer {selfattn_id}"
+                        f"Dump processor set for self-attention in layer {layer_idx_attn}"
                     )
                 elif mode == "inject":
                     inject_prefix = os.path.join(
@@ -686,25 +695,30 @@ def register_attention_processors(
                     )
                     self_attn.set_processor(inject_processor)
                     print(
-                        f"Inject processor set for self-attention in block {block_idx}, layer {selfattn_id}"
+                        f"Inject processor set for self-attention in layer {layer_idx_attn}"
                     )
                 elif mode == "pnp":
-                    pnp_inject_processor = PnPAttentionProcessor(
-                        inject_query=True, inject_key=True, inject_value=True
-                    )
-                    self_attn.set_processor(pnp_inject_processor)
-                    print(
-                        f"OTF inject processor set for self-attention in block {block_idx}, layer {selfattn_id}"
-                    )
+                    if (
+                        share_attn_layers is not None
+                        and layer_idx_attn in share_attn_layers
+                    ):
+                        pnp_inject_processor = PnPAttentionProcessor(
+                            inject_query=share_query,
+                            inject_key=share_key,
+                            inject_value=share_value or layer_idx_attn < 1,
+                        )
+                        self_attn.set_processor(pnp_inject_processor)
+                        print(
+                            f"Pnp inject processor set for self-attention in layer {layer_idx_attn}"
+                        )
                 elif mode == "style_aligned":
                     sa_args = StyleAlignedArgs(shared_score_shift=0.6)
                     shared_processor = SharedAttentionProcessor(sa_args)
                     self_attn.set_processor(shared_processor)
                     print(
-                        f"Shared processor set for self-attention in block {block_idx}, layer {selfattn_id}"
+                        f"Shared processor set for self-attention in block layer {layer_idx_attn}"
                     )
-        block_idx += 1
-        selfattn_id = 0
+                layer_idx_attn += 1
 
 
 def unset_attention_processors(

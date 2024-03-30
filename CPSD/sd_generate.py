@@ -41,8 +41,8 @@ if __name__ == "__main__":
     )
     pipe = pipe.to("cuda")
 
-    prompt_path = "/root/autodl-tmp/CPSD/data/prompt.txt"
-    out_path = "/root/autodl-tmp/CPSD/data/sd21_generated_images"
+    prompt_path = "/root/autodl-tmp/CPSD/data/style_prompt.txt"
+    out_path = "/root/autodl-tmp/CPSD/data/sd21_generated_images_style"
     if not os.path.exists(out_path):
         os.makedirs(out_path)
     i = 0
