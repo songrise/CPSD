@@ -379,11 +379,22 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
                 1, ...
             ].unsqueeze(0)
             if self.inject_query:
-                query = torch.cat([ref_q_uncond, ref_q_cond] * batch_size, dim=0)
+                inject_q_uncond = [ref_q_uncond] * batch_size
+                inject_q_cond = [ref_q_cond] * batch_size
+                query = torch.cat(
+                    [torch.cat(inject_q_uncond), torch.cat(inject_q_cond)]
+                )
             if self.inject_key:
-                key = torch.cat([ref_k_uncond, ref_k_cond] * batch_size, dim=0)
+                inject_k_uncond = [ref_k_uncond] * batch_size
+                inject_k_cond = [ref_k_cond] * batch_size
+                key = torch.cat([torch.cat(inject_k_uncond), torch.cat(inject_k_cond)])
             if self.inject_value:
-                value = torch.cat([ref_v_uncond, ref_v_cond] * batch_size, dim=0)
+                inject_v_uncond = [ref_v_uncond] * batch_size
+                inject_v_cond = [ref_v_cond] * batch_size
+                value = torch.cat(
+                    [torch.cat(inject_v_uncond), torch.cat(inject_v_cond)]
+                )
+
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
@@ -566,6 +577,55 @@ class SharedAttentionProcessor(DefaultAttentionProcessor):
         return hidden_states
 
 
+class DisentangleSharedResBlockWrapper(nn.Module):
+
+    def __init__(self, block: resnet.ResnetBlock2D):
+        super().__init__()
+        self.block = block
+        self.output_scale_factor = self.block.output_scale_factor
+        self.share_enabled = True
+
+    def forward(
+        self,
+        input_tensor: torch.FloatTensor,
+        temb: torch.FloatTensor,
+        scale: float = 1.0,
+    ):
+        if self.share_enabled:
+            feat = self.block(input_tensor, temb, scale)
+            batch_size = feat.shape[0] // 2
+            if batch_size == 1:
+                return feat
+
+            # the features of the reconstruction
+            feat_uncond, feat_cond = feat[0, ...].unsqueeze(0), feat[
+                batch_size, ...
+            ].unsqueeze(0)
+            # residual
+            input_tensor = self.block.conv_shortcut(input_tensor)
+            input_content_uncond, input_content_cond = input_tensor[0, ...].unsqueeze(
+                0
+            ), input_tensor[batch_size, ...].unsqueeze(0)
+            # since feat = (input + h) / scale
+            feat_uncond, feat_cond = (
+                feat_uncond * self.output_scale_factor,
+                feat_cond * self.output_scale_factor,
+            )
+            h_content_uncond, h_content_cond = (
+                feat_uncond - input_content_uncond,
+                feat_cond - input_content_cond,
+            )
+            # only share the h, the residual is not shared
+            h_shared = torch.cat(
+                ([h_content_uncond] * batch_size) + ([h_content_cond] * batch_size),
+                dim=0,
+            )
+            output_shared = (input_tensor + h_shared) / self.output_scale_factor
+            return output_shared
+        else:
+            return self.block(input_tensor, temb, scale)
+
+
 class SharedResBlockWrapper(nn.Module):
     def __init__(self, block: resnet.ResnetBlock2D):
         super().__init__()
@@ -585,21 +645,29 @@ class SharedResBlockWrapper(nn.Module):
             if batch_size == 1:
                 return feat
 
-            feat_uncond, feat_cond = feat[0, ...].unsqueeze(0), feat[1, ...].unsqueeze(
-                0
-            )
-            input_tensor = self.block.conv_shortcut(input_tensor)
-            input_uncond, input_cond = input_tensor[0, ...].unsqueeze(0), input_tensor[
-                1, ...
+            # the features of the reconstruction
+            feat_uncond, feat_cond = feat[0, ...].unsqueeze(0), feat[
+                batch_size, ...
             ].unsqueeze(0)
-            # since feat = (input + h) / scle
+            # residual
+            input_tensor = self.block.conv_shortcut(input_tensor)
+            input_content_uncond, input_content_cond = input_tensor[0, ...].unsqueeze(
+                0
+            ), input_tensor[batch_size, ...].unsqueeze(0)
+            # since feat = (input + h) / scale
             feat_uncond, feat_cond = (
                 feat_uncond * self.output_scale_factor,
                 feat_cond * self.output_scale_factor,
             )
-            h_uncond, h_cond = feat_uncond - input_uncond, feat_cond - input_cond
+            h_content_uncond, h_content_cond = (
+                feat_uncond - input_content_uncond,
+                feat_cond - input_content_cond,
+            )
             # only share the h, the residual is not shared
-            h_shared = torch.cat([h_uncond, h_cond] * batch_size, dim=0)
+            h_shared = torch.cat(
+                ([h_content_uncond] * batch_size) + ([h_content_cond] * batch_size),
+                dim=0,
+            )
             output_shared = (input_tensor + h_shared) / self.output_scale_factor
             return output_shared
         else:
@@ -625,7 +693,8 @@ def _get_switch_vec(total_num_layers, level):
 
 def register_attention_processors(
     unet: unet_2d_condition.UNet2DConditionModel,
-    mode: str,  # dump or inject
+    attn_mode: str,  # dump or inject
+    resnet_mode: str,
     base_dir: str,
     share_resblock: bool = True,
     share_attn: bool = True,
@@ -635,11 +704,11 @@ def register_attention_processors(
     share_key: bool = True,
     share_value: bool = True,
 ):
-    if mode == "dump":
+    if attn_mode == "dump":
         if os.path.exists(base_dir):
             print(f"Dump path ``{base_dir}'' already exists, will be overwritten")
         os.makedirs(base_dir, exist_ok=True)
-    elif mode == "inject":
+    elif attn_mode == "inject":
         assert os.path.exists(
             base_dir
         ), f"Specified injection path ``{base_dir}'' does not exist"
@@ -660,8 +729,14 @@ def register_attention_processors(
                     if layer_idx_resnet not in share_resnet_layers:
                         resnet_wrappers.append(resnet_block)
                     else:
-                        resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
-                        print(f"Share resnet feature set for layer {layer_idx_resnet}")
+                        if resnet_mode == "disentangle":
+                            pass
+                        else:
+                            resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
+                            print(
+                                f"Share resnet feature set for layer {layer_idx_resnet}"
+                            )
+
                     layer_idx_resnet += 1
                 block.resnets = nn.ModuleList(resnet_wrappers)
         if share_attn:
@@ -672,7 +747,7 @@ def register_attention_processors(
                 self_attn: attention_processor.Attention = transformer_block.attn1
                 cross_attn: attention_processor.Attention = transformer_block.attn2
 
-                if mode == "dump":
+                if attn_mode == "dump":
                     dump_processor = DumpAttentionProcessor(
                         os.path.join(
                             base_dir, f"block_{block_idx}_layer_{selfattn_id}_sa"
@@ -682,7 +757,7 @@ def register_attention_processors(
                     print(
                         f"Dump processor set for self-attention in layer {layer_idx_attn}"
                     )
-                elif mode == "inject":
+                elif attn_mode == "inject":
                     inject_prefix = os.path.join(
                         base_dir, f"block_{block_idx}_layer_{selfattn_id}_sa"
                     )
@@ -697,7 +772,7 @@ def register_attention_processors(
                     print(
                         f"Inject processor set for self-attention in layer {layer_idx_attn}"
                     )
-                elif mode == "pnp":
+                elif attn_mode == "pnp":
                     if (
                         share_attn_layers is not None
                         and layer_idx_attn in share_attn_layers
@@ -711,7 +786,7 @@ def register_attention_processors(
                         print(
                             f"Pnp inject processor set for self-attention in layer {layer_idx_attn}"
                         )
-                elif mode == "style_aligned":
+                elif attn_mode == "style_aligned":
                     sa_args = StyleAlignedArgs(shared_score_shift=0.6)
                     shared_processor = SharedAttentionProcessor(sa_args)
                     self_attn.set_processor(shared_processor)

@@ -81,6 +81,7 @@ def first_ddim_inversion(
             latent = style_aligned_next_step(
                 ddim_sampler, noise_pred, t_i, latent, num_inference_steps
             )
+            # latent = ddim_sampler.step(noise_pred, t_i, latent)["prev_sample"]
             zts.append(latent)
 
     zts = torch.cat(zts).flip(0)
@@ -99,9 +100,10 @@ def stylize_loop_pnp(
     tau_attn,
     tau_feat,
 ):
-
+    #!HARDCODED Apr 02: start step
+    start_step = 0
     with torch.cuda.amp.autocast():
-        for i in tqdm.trange(ddim_sampler.num_inference_steps - offset):
+        for i in tqdm.trange(start_step, ddim_sampler.num_inference_steps - offset):
             t_i = ddim_sampler.timesteps[i + offset]
             t_i = torch.tensor(t_i, device=zts.device, dtype=torch.long)
             if (ddim_sampler.num_inference_steps - i) == tau_attn:
@@ -114,29 +116,19 @@ def stylize_loop_pnp(
                 )
 
             latents[0] = zts[i]  # [ref, tgt]
-            latent_model_input = torch.repeat_interleave(latents, 2, dim=0)  #
-            # latent_model_input = torch.cat([latents] * 2, dim=0)
+            # latent_model_input = torch.repeat_interleave(latents, 2, dim=0)  #
+            latent_model_input = torch.cat([latents] * 2, dim=0)
 
             with torch.no_grad():
                 noise_pred = sd.unet(
                     latent_model_input, t_i, encoder_hidden_states=text_embeddings
                 )["sample"]
 
-            (
-                noise_pred_uncond_ref,
-                noise_pred_text_ref,
-                noise_pred_uncond_tgt,
-                noise_pred_text_tgt,
-            ) = noise_pred.chunk(4)
-
-            noise_pred_ref = noise_pred_uncond_ref + cfg_scale * (
-                noise_pred_text_ref - noise_pred_uncond_ref
-            )
-            noise_pred_tgt = noise_pred_uncond_tgt + cfg_scale * (
-                noise_pred_text_tgt - noise_pred_uncond_tgt
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + cfg_scale * (
+                noise_pred_text - noise_pred_uncond
             )
 
-            noise_pred = torch.cat([noise_pred_ref, noise_pred_tgt], dim=0)
             latents = ddim_sampler.step(noise_pred, t_i, latents)["prev_sample"]
 
     return latents
@@ -178,22 +170,25 @@ def stylize_loop_si(
                     latent_model_input, t_i, encoder_hidden_states=text_embeddings
                 )["sample"]
 
-            (
-                noise_pred_uncond_style,
-                noise_pred_text_style,
-                noise_pred_uncond_content,
-                noise_pred_text_content,
-            ) = noise_pred.chunk(4)
+            # (
+            #     noise_pred_uncond_style,
+            #     noise_pred_text_style,
+            #     noise_pred_uncond_content,
+            #     noise_pred_text_content,
+            # ) = noise_pred.chunk(4)
 
-            noise_pred_style = noise_pred_uncond_style + cfg_scale * (
-                noise_pred_text_style - noise_pred_uncond_style
+            # noise_pred_style = noise_pred_uncond_style + cfg_scale * (
+            #     noise_pred_text_style - noise_pred_uncond_style
+            # )
+            # noise_pred_content = noise_pred_uncond_content + cfg_scale * (
+            #     noise_pred_text_content - noise_pred_uncond_content
+            # )
+
+            # noise_pred = torch.cat([noise_pred_style, noise_pred_content], dim=0)
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (
+                noise_pred_text - noise_pred_uncond
             )
-            noise_pred_content = noise_pred_uncond_content + cfg_scale * (
-                noise_pred_text_content - noise_pred_uncond_content
-            )
-
-            noise_pred = torch.cat([noise_pred_style, noise_pred_content], dim=0)
-
             latent_style = latents[1].unsqueeze(0)
             latent_style = ddim_sampler_style.step(noise_pred[:1], t_i, latent_style)[
                 "prev_sample"
@@ -264,8 +259,19 @@ def main_pnp(config_dir):
     batch_size = cfg.batch_size
     num_batches = (len(tgt_prompts) + batch_size - 1) // batch_size
     # construct the starting point of DDIM forward
-    zt = zts[offset].unsqueeze(0)
-
+    # zt = zts[offset].unsqueeze(0)
+    #!HARDCODED Apr 02: start step
+    start_step = 0
+    zt = zts[start_step].unsqueeze(0)
+    if True:  # decode and save the image at each ddim step
+        all_imgs = []
+        for i, latent in enumerate(zts):
+            img = sd.decode_latents(latent.unsqueeze(0))
+            all_imgs.append(img)
+        # grid
+        grid = make_grid(torch.cat(all_imgs), nrow=8)
+        # grid = torchvision.transforms.functional.resize(grid)
+        save_image(grid, f"{experiment_output_path}/ddim_c_grid.png")
     # latents = torch.rand((batch_size, 4, 64, 64), device=zts.device)
     # latents[0] = zt
     for batch_idx in range(num_batches):
@@ -293,7 +299,7 @@ def main_pnp(config_dir):
         style_prompt = [src_prompt] + tgt_prompts_batch
         style_text_embedding = sd.get_text_embeds(style_prompt)
 
-        latents = torch.cat([zt] * 2)
+        latents = zt.repeat(2, 1, 1, 1)
         latents = stylize_loop_pnp(
             sd,
             cfg.style_cfg_scale,
