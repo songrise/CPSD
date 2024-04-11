@@ -72,6 +72,27 @@ def adain(feat: T) -> T:
     return feat
 
 
+def my_adain(feat: T) -> T:
+    batch_size = feat.shape[0] // 2
+    feat_mean, feat_std = calc_mean_std(feat)
+    feat_uncond_content, feat_cond_content = feat[0], feat[batch_size]
+
+    # inline expand
+    feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(1)
+    feat_style_mean = feat_style_mean.expand(2, batch_size, *feat_mean.shape[1:])
+    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape)
+
+    feat_style_std = torch.stack((feat_std[1], feat_std[batch_size + 1])).unsqueeze(1)
+    feat_style_std = feat_style_std.expand(2, batch_size, *feat_std.shape[1:])
+    feat_style_std = feat_style_std.reshape(*feat_std.shape)
+
+    feat = (feat - feat_mean) / feat_std
+    feat = feat * feat_style_std + feat_style_mean
+    feat[0] = feat_uncond_content
+    feat[batch_size] = feat_cond_content
+    return feat
+
+
 class DefaultAttentionProcessor(nn.Module):
 
     def __init__(self):
@@ -306,6 +327,7 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
         inject_query: bool = True,
         inject_key: bool = True,
         inject_value: bool = True,
+        use_adain: bool = False,
     ):
         super().__init__()
 
@@ -369,14 +391,14 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
         batch_size = query.shape[0] // 2  # 2 since CFG is used
         if self.share_enabled and batch_size > 1:  # when == 1, no need to inject,
             ref_q_uncond, ref_q_cond = query[0, ...].unsqueeze(0), query[
-                1, ...
+                batch_size, ...
             ].unsqueeze(0)
-            ref_k_uncond, ref_k_cond = key[0, ...].unsqueeze(0), key[1, ...].unsqueeze(
-                0
-            )
-            # temp, also share the value
+            ref_k_uncond, ref_k_cond = key[0, ...].unsqueeze(0), key[
+                batch_size, ...
+            ].unsqueeze(0)
+
             ref_v_uncond, ref_v_cond = value[0, ...].unsqueeze(0), value[
-                1, ...
+                batch_size, ...
             ].unsqueeze(0)
             if self.inject_query:
                 inject_q_uncond = [ref_q_uncond] * batch_size
@@ -388,6 +410,139 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
                 inject_k_uncond = [ref_k_uncond] * batch_size
                 inject_k_cond = [ref_k_cond] * batch_size
                 key = torch.cat([torch.cat(inject_k_uncond), torch.cat(inject_k_cond)])
+            if self.inject_value:
+                inject_v_uncond = [ref_v_uncond] * batch_size
+                inject_v_cond = [ref_v_cond] * batch_size
+                value = torch.cat(
+                    [torch.cat(inject_v_uncond), torch.cat(inject_v_cond)]
+                )
+
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+
+        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        # inject here, swap the attention map
+
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states, *args)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(
+                batch_size, channel, height, width
+            )
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
+
+class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
+    def __init__(
+        self,
+        inject_query: bool = True,
+        inject_key: bool = True,
+        inject_value: bool = True,
+        use_adain: bool = False,
+    ):
+        super().__init__()
+
+        self.inject_query = inject_query
+        self.inject_key = inject_key
+        self.inject_value = inject_value
+        self.share_enabled = True
+        self.use_adain = use_adain
+        #!HARDCODED Mar 20: need init a processor for the self-attn in each of transformer block in upsampling path
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
+        scale: float = 1.0,
+    ) -> torch.Tensor:
+        residual = hidden_states
+
+        # args = () if USE_PEFT_BACKEND else (scale,)
+        args = ()
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(
+                batch_size, channel, height * width
+            ).transpose(1, 2)
+
+        batch_size, sequence_length, _ = (
+            hidden_states.shape
+            if encoder_hidden_states is None
+            else encoder_hidden_states.shape
+        )
+        attention_mask = attn.prepare_attention_mask(
+            attention_mask, sequence_length, batch_size
+        )
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(
+                1, 2
+            )
+
+        query = attn.to_q(hidden_states, *args)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(
+                encoder_hidden_states
+            )
+
+        key = attn.to_k(encoder_hidden_states, *args)
+        value = attn.to_v(encoder_hidden_states, *args)
+        # inject here, swap the q k
+        batch_size = query.shape[0] // 2  # 2 since CFG is used
+        if self.share_enabled and batch_size > 1:  # when == 1, no need to inject,
+            ref_q_uncond, ref_q_cond = query[1, ...].unsqueeze(0), query[
+                batch_size + 1, ...
+            ].unsqueeze(0)
+            ref_k_uncond, ref_k_cond = key[0, ...].unsqueeze(0), key[
+                batch_size + 1, ...
+            ].unsqueeze(0)
+
+            ref_v_uncond, ref_v_cond = value[0, ...].unsqueeze(0), value[
+                batch_size + 1, ...
+            ].unsqueeze(0)
+            if self.inject_query:
+                if self.use_adain:
+                    query = my_adain(query)
+                else:
+                    inject_q_uncond = [ref_q_uncond] * batch_size
+                    inject_q_cond = [ref_q_cond] * batch_size
+                    query = torch.cat(
+                        [torch.cat(inject_q_uncond), torch.cat(inject_q_cond)]
+                    )
+            if self.inject_key:
+                if self.use_adain:
+                    key = my_adain(key)
+                else:
+                    inject_k_uncond = [ref_k_uncond] * batch_size
+                    inject_k_cond = [ref_k_cond] * batch_size
+                    key = torch.cat(
+                        [torch.cat(inject_k_uncond), torch.cat(inject_k_cond)]
+                    )
             if self.inject_value:
                 inject_v_uncond = [ref_v_uncond] * batch_size
                 inject_v_cond = [ref_v_cond] * batch_size
@@ -620,8 +775,11 @@ class DisentangleSharedResBlockWrapper(nn.Module):
                 ([h_content_uncond] * batch_size) + ([h_content_cond] * batch_size),
                 dim=0,
             )
-            output_shared = (input_tensor + h_shared) / self.output_scale_factor
-            return output_shared
+            output_feat_shared = (input_tensor + h_shared) / self.output_scale_factor
+            # do not inject the feat for the 2nd instance, which is the genertion term for style
+            output_feat_shared[1] = feat[1]
+            output_feat_shared[batch_size + 1] = feat[batch_size + 1]
+            return output_feat_shared
         else:
             return self.block(input_tensor, temb, scale)
 
@@ -703,6 +861,7 @@ def register_attention_processors(
     share_query: bool = True,
     share_key: bool = True,
     share_value: bool = True,
+    use_adain: bool = False,
 ):
     if attn_mode == "dump":
         if os.path.exists(base_dir):
@@ -730,7 +889,12 @@ def register_attention_processors(
                         resnet_wrappers.append(resnet_block)
                     else:
                         if resnet_mode == "disentangle":
-                            pass
+                            resnet_wrappers.append(
+                                DisentangleSharedResBlockWrapper(resnet_block)
+                            )
+                            print(
+                                f"Disentangle resnet feature set for layer {layer_idx_resnet}"
+                            )
                         else:
                             resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
                             print(
@@ -781,6 +945,7 @@ def register_attention_processors(
                             inject_query=share_query,
                             inject_key=share_key,
                             inject_value=share_value or layer_idx_attn < 1,
+                            use_adain=use_adain,
                         )
                         self_attn.set_processor(pnp_inject_processor)
                         print(
@@ -793,6 +958,21 @@ def register_attention_processors(
                     print(
                         f"Shared processor set for self-attention in block layer {layer_idx_attn}"
                     )
+                elif attn_mode == "disentangled_pnp":
+                    if (
+                        share_attn_layers is not None
+                        and layer_idx_attn in share_attn_layers
+                    ):
+                        pnp_inject_processor = DisentangledPnPAttentionProcessor(
+                            inject_query=share_query,
+                            inject_key=share_key,
+                            inject_value=share_value or layer_idx_attn < 1,
+                            use_adain=use_adain,
+                        )
+                        self_attn.set_processor(pnp_inject_processor)
+                        print(
+                            f"Disentangled Pnp inject processor set for self-attention in layer {layer_idx_attn}"
+                        )
                 layer_idx_attn += 1
 
 

@@ -154,13 +154,15 @@ def sample_disentangled(
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
 
     # Create a random starting point if we don't have one already
-    if start_latents is None:
-        start_latents = torch.randn(1, 4, 64, 64, device=device)
-        start_latents *= pipe.scheduler.init_noise_sigma
+    # if start_latents is None:
+    generative_latent = torch.randn(1, 4, 64, 64, device=device)
+    generative_latent *= pipe.scheduler.init_noise_sigma
 
     latents = start_latents.clone()
 
-    latents = latents.repeat(len(prompt) + 1, 1, 1, 1)
+    latents = latents.repeat(len(prompt), 1, 1, 1)
+    # randomly initalize the 1st lantent for generation
+    latents[1] = generative_latent
     # assume that the first latent is used for reconstruction
     for i in tqdm(range(start_step, num_inference_steps)):
         latents[0] = intermediate_latents[(-i + 1)]
@@ -289,13 +291,22 @@ def invert(
 #     i.save("debug.png")
 
 
-def edit_image_with_inversion(
+def style_image_with_inversion(
     input_image,
     input_image_prompt,
-    edit_prompt,
+    style_prompt,
     num_steps=100,
     start_step=30,
     guidance_scale=3.5,
+    disentangle=False,
+    share_attn=False,
+    share_resnet_layers=[0, 1],
+    share_attn_layers=[],
+    share_key=True,
+    share_query=True,
+    share_value=False,
+    use_adain=True,
+    output_dir: str = None,
 ):
     with torch.no_grad():
         latent = pipe.vae.encode(input_image.to(device) * 2 - 1)
@@ -305,77 +316,123 @@ def edit_image_with_inversion(
 
     attn_injection.register_attention_processors(
         pipe.unet,
-        base_dir="/root/autodl-tmp/CPSD/attn/debug",
-        resnet_mode="default",
-        attn_mode="pnp",
+        base_dir=output_dir,
+        resnet_mode="disentangle" if disentangle else "default",
+        attn_mode="disentangled_pnp" if disentangle else "pnp",
         share_resblock=True,
-        share_attn=True,
-        # share_attn=False,
-        share_resnet_layers=[0, 1],
-        share_attn_layers=[],
-        share_key=True,
-        share_query=True,
-        share_value=False,
+        share_attn=share_attn,
+        share_resnet_layers=share_resnet_layers,
+        share_attn_layers=share_attn_layers,
+        share_key=share_key,
+        share_query=share_query,
+        share_value=share_value,
+        use_adain=use_adain,
     )
-
-    final_im = sample(
-        edit_prompt,
-        start_latents=inverted_latents[-(start_step + 1)][None],
-        intermediate_latents=inverted_latents,
-        start_step=start_step,
-        num_inference_steps=num_steps,
-        guidance_scale=guidance_scale,
-    )
+    if disentangle:
+        final_im = sample_disentangled(
+            style_prompt,
+            start_latents=inverted_latents[-(start_step + 1)][None],
+            intermediate_latents=inverted_latents,
+            start_step=start_step,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+        )
+    else:
+        final_im = sample(
+            style_prompt,
+            start_latents=inverted_latents[-(start_step + 1)][None],
+            intermediate_latents=inverted_latents,
+            start_step=start_step,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+        )
 
     return final_im
 
 
-# inversion
-# https://www.pexels.com/photo/a-beagle-on-green-grass-field-8306128/
-src_img = Image.open("/root/autodl-tmp/CPSD/data/horse.png")
-src_img = transforms.ToTensor()(src_img).unsqueeze(0).to(device)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Stable Diffusion with OmegaConf")
+    parser.add_argument(
+        "--config", type=str, default="config.yaml", help="Path to the config file"
+    )
+    args = parser.parse_args()
+    config_dir = args.config
+    cfg = OmegaConf.load(config_dir)
+    base_output_path = cfg.out_path
+    base_output_path = os.path.join(base_output_path, cfg.exp_name)
+    if not os.path.exists(base_output_path):
+        os.makedirs(base_output_path)
+    # Create a folder with a unique name for each experiment according to the process uid
+    experiment_id = str(uuid.uuid4())[
+        :8
+    ]  # Generate a unique identifier for the experiment
+    experiment_output_path = os.path.join(base_output_path, experiment_id)
+    os.makedirs(experiment_output_path)
 
-h, w = src_img.shape[-2:]
-src_img_512 = torchvision.transforms.functional.pad(
-    src_img, ((512 - w) // 2,), fill=0, padding_mode="constant"
-)
-input_image = F.interpolate(src_img, (512, 512), mode="bilinear", align_corners=False)
-# drop alpha channel if it exists
-if input_image.shape[1] == 4:
-    input_image = input_image[:, :3]
-# # Encode with VAE
-# with torch.no_grad():
-#     latent = pipe.vae.encode(input_image.to(device) * 2 - 1)
-# l = 0.18215 * latent.latent_dist.sample()
-edit_prompt = [
-    "a white horse on grassland",
-    # "a bronze statue of horse on grassland",
-    "a B&W pencil sketch of a horse on grassland",
-    "a cubisim painting of a horse on grassland",
-    # "a horse in the Starry Night Style",
-    # "a B&W sketch of a horse",
-]
-# edit_prompt = [
-#     "a fauvisim painting of a horse and grassland",
-#     "a cubisim painting of a horse and grassland",
-#     "a horse and grassland in the Starry Night Style",
-#     "a B&W sketch of a horse and grassland",
-# ]
-# edit_prompt = [
-#     "a fauvisim painting",
-#     "a cubisim painting ",
-#     "Starry Night style painting",
-#     "a B&W sketch ",
-# ]
-imgs = edit_image_with_inversion(
-    input_image,
-    "A photo of white horse",
-    edit_prompt=edit_prompt,
-    num_steps=50,
-    start_step=4,
-    guidance_scale=5,
-)
+    # Save the experiment configuration
+    config_file_path = os.path.join(experiment_output_path, "config.yaml")
+    omegaconf.OmegaConf.save(cfg, config_file_path)
 
-for i, img in enumerate(imgs):
-    img.save(f"/root/autodl-tmp/CPSD/out/sd_style/CSDN/debug{i}.png")
-    print(f"Image saved as /root/autodl-tmp/CPSD/out/sd_style/CSDN/debug{i}.png")
+    if not os.path.exists(cfg.out_path):
+        os.makedirs(cfg.out_path)
+
+    g_cpu = torch.Generator(device="cpu")
+    g_cpu.manual_seed(42)
+    # inversion
+    # https://www.pexels.com/photo/a-beagle-on-green-grass-field-8306128/
+    src_img = Image.open(cfg.src_img)
+    src_img = transforms.ToTensor()(src_img).unsqueeze(0).to(device)
+
+    h, w = src_img.shape[-2:]
+    src_img_512 = torchvision.transforms.functional.pad(
+        src_img, ((512 - w) // 2,), fill=0, padding_mode="constant"
+    )
+    input_image = F.interpolate(
+        src_img, (512, 512), mode="bilinear", align_corners=False
+    )
+    # drop alpha channel if it exists
+    if input_image.shape[1] == 4:
+        input_image = input_image[:, :3]
+
+    style_prompt = [p for p in cfg.tgt_prompt]
+    # edit_prompt = [
+    #     "a photo of a girl",
+    #     # "a bronze statue of horse on grassland",
+    #     "a fauvisim painting of a girl",
+    #     "a fauvisim painting of a girl",
+    #     # "a horse in the Starry Night Style",
+    #     # "a B&W sketch of a horse",
+    # ]
+    # edit_prompt = [
+    #     "a fauvisim painting of a horse and grassland",
+    #     "a cubisim painting of a horse and grassland",
+    #     "a horse and grassland in the Starry Night Style",
+    #     "a B&W sketch of a horse and grassland",
+    # ]
+    # edit_prompt = [
+    #     "a fauvisim painting",
+    #     "a cubisim painting ",
+    #     "Starry Night style painting",
+    #     "a B&W sketch ",
+    # ]
+    imgs = style_image_with_inversion(
+        input_image,
+        style_prompt[0],
+        style_prompt=style_prompt,
+        num_steps=50,
+        start_step=10,
+        guidance_scale=7.5,
+        disentangle=False,
+        share_attn=cfg.share_attn,
+        share_resnet_layers=cfg.share_resnet_layers,
+        share_attn_layers=cfg.share_attn_layers,
+        share_key=cfg.share_key,
+        share_query=cfg.share_query,
+        share_value=cfg.share_value,
+        use_adain=cfg.use_adain,
+        output_dir=experiment_output_path,
+    )
+
+    for i, img in enumerate(imgs):
+        img.save(f"{experiment_output_path}/debug{i}.png")
+        print(f"Image saved as {experiment_output_path}/debug{i}.png")
