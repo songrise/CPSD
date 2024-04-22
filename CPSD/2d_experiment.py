@@ -8,6 +8,7 @@ from torchvision.utils import save_image
 import argparse
 import PIL.Image as Image
 from torchvision.utils import make_grid
+import glob
 
 
 def parse_args():
@@ -17,7 +18,7 @@ def parse_args():
         type=str,
         default="edit",
         help="generation or edit",
-        choices=["generation", "edit"],
+        choices=["generation", "edit", "stylize"],
     )
     parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--method", type=str, default="sds", help="sds, nfsd, csd")
@@ -105,9 +106,10 @@ def zero_shot_gen(
 def edit_sds(sd, latent, prompt, image_path, method="sds"):
     # optimize 2d tensor as image representation.
 
-    optimizer = torch.optim.SGD([latent], lr=0.2)
+    lr = 0.2 if method == "sds" else 1.0
+    optimizer = torch.optim.SGD([latent], lr=lr)
     decay = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.90)
-    n_iter = 50
+    n_iter = 100
 
     image = sd.decode_latents(latent)
     image_steps = []
@@ -119,7 +121,7 @@ def edit_sds(sd, latent, prompt, image_path, method="sds"):
         elif method == "nfsd":
             sd.manual_backward_nfsd(embed, image, guidance_scale=7.5, latent=latent)
         optimizer.step()
-        if i % 10 == 0:
+        if i % 20 == 0:
             decay.step()
             print(f"[INFO] iter {i}, loss {torch.norm(latent.grad)}")
             image = sd.decode_latents(latent)
@@ -134,6 +136,7 @@ def edit_sds(sd, latent, prompt, image_path, method="sds"):
     from torchvision.utils import save_image
 
     save_image(grid, image_path)
+    print(f"Done, Image saved as {image_path}")
 
 
 def edit_nfsd(sd, latent, prompt, image_path):
@@ -142,14 +145,12 @@ def edit_nfsd(sd, latent, prompt, image_path):
 
 def edit_dds(sd, latent, prompt_a, prompt_b, image_path):
     latent_orig = latent.data.clone().requires_grad_(False)
-    optimizer = torch.optim.SGD([latent], lr=0.2)
-    decay = torch.optim.lr_scheduler.StepLR(
-        optimizer=optimizer, step_size=20, gamma=0.9
-    )
+    optimizer = torch.optim.SGD([latent], lr=1.0)
+    decay = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=1, gamma=0.9)
     n_iter = 200
 
     image = sd.decode_latents(latent)
-    image_steps = [image.clone().detach()]
+    image_steps = []
     embed_a = sd.get_text_embeds(prompt_a)
     embed_b = sd.get_text_embeds(prompt_b)
     for i in range(n_iter):
@@ -169,11 +170,11 @@ def edit_dds(sd, latent, prompt_a, prompt_b, image_path):
         )
         optimizer.step()
 
-        if i % 20 == 0:
+        if i % 40 == 0:
             print(f"[INFO] iter {i}, loss {torch.norm(latent.grad)}")
             image = sd.decode_latents(latent)
             image_steps.append(image.detach().clone())
-            decay.step()
+            # decay.step()
 
     # visualize as grid
     image_steps = torch.cat(image_steps, dim=0)
@@ -191,7 +192,7 @@ def sd_forward(prompt):
     imgs = []
     # fix_randomness(42)
     device = torch.device("cuda")
-    sd = StableDiffusion(device, version="2.0")
+    sd = StableDiffusion(device, version="2.1")
     latent = nn.Parameter(torch.empty(1, 4, 64, 64, device=device))
     for _ in range(8):
         img = sd.prompt_to_img(prompt, 512, 512, 100)
@@ -207,26 +208,35 @@ def sd_forward(prompt):
 
 
 if __name__ == "__main__":
-    fix_randomness()
 
     # edit_sds()
     # edit_dds()
     def generation_experiment(sd_model, out_dir: str = None, tgt_prompt: str = None):
         print("start generation experiment")
         # prompt = "A painting of an astronaut riding a horse on the moon."
-        tgt_prompt = "a zoomed out DSLR photo of a panda wearing a chef's hat and kneading bread dough on a countertop"
+        # tgt_prompt = "a zoomed out DSLR photo of a panda wearing a chef's hat and kneading bread dough on a countertop"
         # prompt = "“a photo of a asian man in pixar style”"
 
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-        # zero_shot_gen(prompt, method="sds", save_path=f"{out_dir}/image_steps_sds.png")
+        zero_shot_gen(
+            sd_model,
+            tgt_prompt,
+            method="sds",
+            save_path=f"{out_dir}/image_steps_sds.png",
+        )
         zero_shot_gen(
             sd_model,
             tgt_prompt,
             method="nfsd",
             save_path=f"{out_dir}/image_steps_nfsd.png",
         )
-        # zero_shot_gen(prompt, method="csd", save_path=f"{out_dir}/image_steps_csd.png")
+        zero_shot_gen(
+            sd_model,
+            tgt_prompt,
+            method="csd",
+            save_path=f"{out_dir}/image_steps_csd.png",
+        )
         # sd_forward(prompt)
         print(f"Done, saved to {out_dir}")
 
@@ -236,6 +246,7 @@ if __name__ == "__main__":
         out_dir: str = None,
         src_prompt: str = None,
         tgt_prompt: str = None,
+        method: str = "sds",
     ):
         print("start editing experiment")
 
@@ -250,54 +261,69 @@ if __name__ == "__main__":
         latent.data = image_latent.data
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        # edit_sds(sd, latent, prompt_b, f"{base_dir}image_steps_sds.png")
-        # edit_nfsd(sd, latent, prompt_b, f"{base_dir}image_steps_nfsd.png")
-        edit_dds(
-            sd_model, latent, src_prompt, tgt_prompt, f"{out_dir}/image_steps_dds.png"
-        )
+        if method == "sds":
+            edit_sds(
+                sd_model, latent, tgt_prompt, f"{out_dir}/image_steps_sds.png", method
+            )
+        elif method == "nfsd":
+            edit_nfsd(sd_model, latent, tgt_prompt, f"{out_dir}/image_steps_nfsd.png")
+        elif method == "dds":
+            edit_dds(
+                sd_model,
+                latent,
+                src_prompt,
+                tgt_prompt,
+                f"{out_dir}/image_steps_dds.png",
+            )
 
     args = parse_args()
+    fix_randomness(42)
     out_dir = args.output_dir
     # init diffusion model
     device = torch.device("cuda")
     sd_model = StableDiffusion(device, version="2.1")
     if args.mode == "generation":
         out_dir = os.path.join(out_dir, "generation")
-        generation_experiment(sd_model=sd_model, out_dir=out_dir)
+        tgt_prompt = "a zoomed out DSLR photo of a panda wearing a chef's hat and kneading bread dough on a countertop"
+        generation_experiment(sd_model=sd_model, out_dir=out_dir, tgt_prompt=tgt_prompt)
     elif args.mode == "edit":
         out_dir = os.path.join(out_dir, "edit")
 
-        src_prompt = " a photo of a girl"
-        tgt_prompt = "a photo of Barack Obama"
+        src_prompt = "panda snowboarding"
+        tgt_prompt = "squirrel snowboarding"
 
-        with open("/root/autodl-tmp/CPSD/data/girl_1.png", "rb") as f:
+        with open("/root/autodl-tmp/CPSD/data/panda_snow.png", "rb") as f:
             image_ = Image.open(f)
             img_out_dir = os.path.join(
                 out_dir,
-                f"image_girl",
+                f"image_panda",
             )
-            edit_experiment(
-                sd_model=sd_model,
-                src_image=image_,
-                out_dir=img_out_dir,
-                src_prompt=src_prompt,
-                tgt_prompt=tgt_prompt,
-            )
+            # for method in ["sds", "nfsd", "dds"]:
+            for method in ["dds"]:
+                edit_experiment(
+                    sd_model=sd_model,
+                    src_image=image_,
+                    out_dir=img_out_dir,
+                    src_prompt=src_prompt,
+                    tgt_prompt=tgt_prompt,
+                    method=method,
+                )
 
     elif args.mode == "stylize":
         out_dir = os.path.join(out_dir, "edit")
-        images_dir = "/root/autodl-tmp/CPSD/data/sd21_generated_images"
-        prompt_file = "/root/autodl-tmp/CPSD/data/prompt.txt"
+        images_dir = "/root/autodl-tmp/CPSD/data/test_imgs"
+        prompt_file = "/root/autodl-tmp/CPSD/data/test_imgs/prompt.txt"
         src_prompts = []
         with open(prompt_file, "r") as f:
             for prompt in f:
                 src_prompts.append(prompt.strip())
-        tgt_prompts = [p + "in vincent van gogh style." for p in src_prompts]
+        # tgt_prompts = [p + "in vincent van gogh style." for p in src_prompts]
+        tgt_prompts = ["a fauvism painting of a horse on grassland."]
 
         i = 0
         # for all generated images
-        for img in os.listdir(images_dir):
-            img_path = os.path.join(images_dir, img)
+        for img_path in glob.glob(images_dir + "/*.png"):
+
             with open(img_path, "rb") as f:
                 image_ = Image.open(f)
                 img_out_dir = os.path.join(
@@ -313,5 +339,6 @@ if __name__ == "__main__":
                     out_dir=img_out_dir,
                     src_prompt=src_prompt,
                     tgt_prompt=tgt_prompt,
+                    method="dds",
                 )
                 i += 1

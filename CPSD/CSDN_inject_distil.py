@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 from matplotlib import pyplot as plt
 from torchvision import transforms as tfms
 from diffusers import StableDiffusionPipeline, DDIMScheduler
+from models.sds import StableDiffusion
 import torch
 import torch.nn as nn
 import torchvision
@@ -30,10 +31,28 @@ import omegaconf
 device = torch.device("cuda")
 
 
+# Useful function for later
+def load_image(url, size=None):
+    response = requests.get(url, timeout=0.2)
+    img = Image.open(BytesIO(response.content)).convert("RGB")
+    if size is not None:
+        img = img.resize(size)
+    return img
+
+
+# Load a pipeline
+pipe = StableDiffusionPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-2-1-base"
+).to(device)
+
+
+# Set up a DDIM scheduler
+pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+
+
 # Sample function (regular DDIM)
 @torch.no_grad()
 def sample(
-    pipe,
     prompt,
     start_step=0,
     start_latents=None,
@@ -107,10 +126,9 @@ def sample(
     return images
 
 
-# Sample function (regular DDIM), but disentangle the content and style
+# Sample function (regular DDIM)
 @torch.no_grad()
 def sample_disentangled(
-    pipe,
     prompt,
     start_step=0,
     start_latents=None,
@@ -189,7 +207,6 @@ def sample_disentangled(
 ## Inversion
 @torch.no_grad()
 def invert(
-    pipe,
     start_latents,
     prompt,
     guidance_scale=3.5,
@@ -275,7 +292,6 @@ def invert(
 
 
 def style_image_with_inversion(
-    pipe,
     input_image,
     input_image_prompt,
     style_prompt,
@@ -296,9 +312,7 @@ def style_image_with_inversion(
         latent = pipe.vae.encode(input_image.to(device) * 2 - 1)
         # latent = pipe.vae.encode(input_image.to(device))
     l = 0.18215 * latent.latent_dist.sample()
-    inverted_latents = invert(
-        pipe, l, input_image_prompt, num_inference_steps=num_steps
-    )
+    inverted_latents = invert(l, input_image_prompt, num_inference_steps=num_steps)
 
     attn_injection.register_attention_processors(
         pipe.unet,
@@ -314,10 +328,8 @@ def style_image_with_inversion(
         share_value=share_value,
         use_adain=use_adain,
     )
-
     if disentangle:
         final_im = sample_disentangled(
-            pipe,
             style_prompt,
             start_latents=inverted_latents[-(start_step + 1)][None],
             intermediate_latents=inverted_latents,
@@ -327,7 +339,6 @@ def style_image_with_inversion(
         )
     else:
         final_im = sample(
-            pipe,
             style_prompt,
             start_latents=inverted_latents[-(start_step + 1)][None],
             intermediate_latents=inverted_latents,
@@ -340,15 +351,6 @@ def style_image_with_inversion(
 
 
 if __name__ == "__main__":
-
-    # Load a pipeline
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "stabilityai/stable-diffusion-2-1-base"
-    ).to(device)
-
-    # Set up a DDIM scheduler
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
     parser = argparse.ArgumentParser(description="Stable Diffusion with OmegaConf")
     parser.add_argument(
         "--config", type=str, default="config.yaml", help="Path to the config file"
@@ -401,25 +403,13 @@ if __name__ == "__main__":
     #     # "a horse in the Starry Night Style",
     #     # "a B&W sketch of a horse",
     # ]
-    # edit_prompt = [
-    #     "a fauvisim painting of a horse and grassland",
-    #     "a cubisim painting of a horse and grassland",
-    #     "a horse and grassland in the Starry Night Style",
-    #     "a B&W sketch of a horse and grassland",
-    # ]
-    # edit_prompt = [
-    #     "a fauvisim painting",
-    #     "a cubisim painting ",
-    #     "Starry Night style painting",
-    #     "a B&W sketch ",
-    # ]
+
     imgs = style_image_with_inversion(
-        pipe,
         input_image,
         style_prompt[0],
         style_prompt=style_prompt,
         num_steps=50,
-        start_step=2,
+        start_step=10,
         guidance_scale=5,
         disentangle=True,
         share_attn=cfg.share_attn,

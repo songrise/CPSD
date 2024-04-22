@@ -45,9 +45,7 @@ class StableDiffusion(nn.Module):
         self.min_step = int(self.num_train_timesteps * 0.02)
         self.max_step = int(self.num_train_timesteps * 0.98)
         self.use_depth = False
-        if self.sd_version == "1.4":
-            self.model_key = "CompVis/stable-diffusion-v1-4"
-        elif self.sd_version == "1.5":
+        if self.sd_version == "1.5":
             self.model_key = "runwayml/stable-diffusion-v1-5"
         elif self.sd_version == "2.0":
             self.use_depth = True
@@ -90,6 +88,7 @@ class StableDiffusion(nn.Module):
 
         self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
 
+        # self.alphas = self.scheduler.alphas_cumprod.to(self.device) # for convenience
 
         print(f"[INFO] loaded stable diffusion!")
 
@@ -415,14 +414,8 @@ class StableDiffusion(nn.Module):
         src_latent=None,
         tgt_latent=None,
     ):
-        """
-        calculate and mannually backward the gradient derived
-        from the delta denoising score by one step.
-
-        Return: the calculated score (gradient)
-        """
-
         # h, w = src_img.shape[-2:]
+
         # zero pad to 512x512
         # pred_rgb_512 = torchvision.transforms.functional.pad(src_img, ((512-w)//2, ), fill=0, padding_mode='constant')
         if src_latent is None:
@@ -435,43 +428,18 @@ class StableDiffusion(nn.Module):
                 tgt_img, (512, 512), mode="bilinear", align_corners=False
             )
             tgt_latent = self.encode_imgs(tgt_img_512).requires_grad_(True)
-
-        t = torch.randint(
-            self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device
-        )
-
-        # noise_overwrite = torch.rand_like(src_latent)
-        noise_overwrite = None
         with torch.no_grad():  # notice calc_grad does not rely on autograd
             src_grad = self.calc_grad(
-                src_text_embd,
-                src_img,
-                guidance_scale=guidance_scale,
-                latent=src_latent,
-                t_overwrite=t,
-                noise_overwrite=noise_overwrite,
+                src_text_embd, src_img, guidance_scale=guidance_scale, latent=src_latent
             )
-
         tgt_grad = self.calc_grad(
-            tgt_text_embd,
-            tgt_img,
-            guidance_scale=guidance_scale,
-            latent=tgt_latent,
-            t_overwrite=t,
-            noise_overwrite=noise_overwrite,
+            tgt_text_embd, tgt_img, guidance_scale=guidance_scale, latent=tgt_latent
         )
         grad = tgt_grad - src_grad
         tgt_latent.backward(gradient=grad, retain_graph=True)
-        return grad.detach()
 
     def calc_grad(
-        self,
-        text_embeddings,
-        pred_rgb: torch.Tensor,
-        guidance_scale=100,
-        latent=None,
-        t_overwrite=None,
-        noise_overwrite=None,
+        self, text_embeddings, pred_rgb: torch.Tensor, guidance_scale=100, latent=None
     ) -> torch.Tensor:
         """
         calculate the gradient of the predicted rgb
@@ -503,16 +471,9 @@ class StableDiffusion(nn.Module):
             latents = latent
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
-        if t_overwrite is not None:
-            t = t_overwrite
-        else:
-            t = torch.randint(
-                self.min_step,
-                self.max_step + 1,
-                [1],
-                dtype=torch.long,
-                device=self.device,
-            )
+        t = torch.randint(
+            self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device
+        )
         # t = torch.randint(self.min_step, 50, [1], dtype=torch.long, device=self.device)
 
         # torch.cuda.synchronize(); print(f'[TIME] guiding: vae enc {time.time() - _t:.4f}s')
@@ -521,10 +482,7 @@ class StableDiffusion(nn.Module):
         # _t = time.time()
         with torch.no_grad():
             # add noise
-            if noise_overwrite is not None:
-                noise = noise_overwrite
-            else:
-                noise = torch.randn_like(latents)
+            noise = torch.randn_like(latents)
             latents_noisy = self.scheduler.add_noise(latents, noise, t)
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 2)
@@ -556,95 +514,6 @@ class StableDiffusion(nn.Module):
         # return pred_rgb_grad
         #!HARDCODED Dec 06: new
         # TODO Dec 06: refactor the latent flag
-        if latent is None:
-            latents.backward(gradient=grad, retain_graph=True)
-            # torch.cuda.synchronize(); print(f'[TIME] guiding: backward {time.time() - _t:.4f}s')
-
-            pred_rgb_grad = pred_rgb.grad.detach().clone()
-            return pred_rgb_grad
-        else:
-            return grad
-
-    def calc_grad_injected(
-        self,
-        text_embeddings,
-        pred_rgb: torch.Tensor,
-        latent: torch.Tensor,
-        t_i,  # index of the time step
-        intermediate_latents: torch.Tensor,
-        guidance_scale: float = 100,
-        inference_steps: int = 50,
-        noise_overwrite: torch.Tensor = None,
-        disentangle: bool = False,
-    ) -> torch.Tensor:
-        """
-        calculate the gradient of the predicted rgb
-        Input:
-            pred_rgb: Tensor, [1, 3, H, W] assume requires grad
-
-        return:
-            grad_map: [1, 3, H, W], in the same dimension.
-        """
-        # interp to 512x512 to be fed into vae.
-
-        # _t = time.time()
-        assert isinstance(
-            self.scheduler, DDIMScheduler
-        ), "DDIMScheduler is required for DDIM inverse."
-
-        self.scheduler.set_timesteps(inference_steps)
-        # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
-        if t_i is None:
-            t = torch.randint(
-                self.min_step,
-                self.max_step + 1,
-                [1],
-                dtype=torch.long,
-                device=self.device,
-            )
-        # _t = time.time()
-        with torch.no_grad():
-            # add noise
-            if noise_overwrite is not None:
-                # if shape not same, then repeat
-                if noise.shape != latents.shape:
-                    B = latents.shape[0]
-                    noise = noise_overwrite.repeat(B, 1, 1, 1)
-                else:
-                    noise = noise_overwrite
-            else:
-                noise = torch.randn_like(latents)
-            # latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            latents_noisy = intermediate_latents[-(t_i + 1)]  # from DDIM inversion
-            t = self.scheduler.timesteps[t_i]
-            if disentangle:
-                latents_noisy = latents_noisy.repeat(3, 1, 1, 1)
-            else:
-                latents_noisy = latents_noisy.repeat(2, 1, 1, 1)
-
-            # pred noise
-            latent_model_input = torch.cat([latents_noisy] * 2)
-            noise_pred = self.unet(
-                latent_model_input, t, encoder_hidden_states=text_embeddings
-            ).sample
-        # torch.cuda.synchronize(); print(f'[TIME] guiding: unet {time.time() - _t:.4f}s')
-
-        # perform guidance (high scale from paper!)
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (
-            noise_pred_text - noise_pred_uncond
-        )
-
-        # w(t), sigma_t^2
-        w = 1 - self.alphas[t_i]
-        # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
-        grad = w * (noise_pred - noise)
-
-        # clip grad for stable training?
-        # grad = grad.clamp(-1, 1)
-        # extract the grad of the stylization term
-        grad = grad[-1, ...].unsqueeze(0)
-
         if latent is None:
             latents.backward(gradient=grad, retain_graph=True)
             # torch.cuda.synchronize(); print(f'[TIME] guiding: backward {time.time() - _t:.4f}s')
@@ -823,79 +692,6 @@ class StableDiffusion(nn.Module):
         imgs = (imgs * 255).round().astype("uint8")
 
         return imgs
-
-    def ddim_inverse(
-        self,
-        start_latents,
-        prompt,
-        guidance_scale=3.5,
-        num_inference_steps=80,
-        num_images_per_prompt=1,
-        use_cfg=True,
-        negative_prompt="",
-        device="cuda",
-    ):
-        """
-        run ddim inversion on the given latents and prompt
-        return all intermidiate latents produced by DDIM inversion.
-        """
-        assert isinstance(
-            self.scheduler, DDIMScheduler
-        ), "DDIMScheduler is required for DDIM inverse."
-
-        # Encode prompt
-        text_embeddings = self.get_text_embeds(prompt)
-        # Latents are now the specified start latents
-        latents = start_latents.clone()
-
-        # We'll keep a list of the inverted latents as the process goes on
-        intermediate_latents = []
-
-        # Set num inference steps
-        # TODO Apr 13:  check if this would affect the distillation
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-
-        # Reversed timesteps <<<<<<<<<<<<<<<<<<<<
-        timesteps = reversed(self.scheduler.timesteps)
-
-        for i in tqdm(range(1, num_inference_steps), total=num_inference_steps - 1):
-
-            # We'll skip the final iteration
-            if i >= num_inference_steps - 1:
-                continue
-
-            t = timesteps[i]
-
-            # Expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2) if use_cfg else latents
-            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
-            # Predict the noise residual
-            noise_pred = self.unet(
-                latent_model_input, t, encoder_hidden_states=text_embeddings
-            ).sample
-
-            # Perform guidance
-            if use_cfg:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
-                )
-
-            current_t = max(0, t.item() - (1000 // num_inference_steps))  # t
-            next_t = t  # min(999, t.item() + (1000//num_inference_steps)) # t+1
-            alpha_t = pipe.scheduler.alphas_cumprod[current_t]
-            alpha_t_next = pipe.scheduler.alphas_cumprod[next_t]
-
-            # Inverted update step (re-arranging the update step to get x(t) (new latents) as a function of x(t-1) (current latents)
-            latents = (latents - (1 - alpha_t).sqrt() * noise_pred) * (
-                alpha_t_next.sqrt() / alpha_t.sqrt()
-            ) + (1 - alpha_t_next).sqrt() * noise_pred
-
-            # Store
-            intermediate_latents.append(latents)
-
-        return torch.cat(intermediate_latents)
 
 
 # if __name__ == '__main__':
