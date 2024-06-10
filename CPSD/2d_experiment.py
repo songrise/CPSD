@@ -9,6 +9,8 @@ import argparse
 import PIL.Image as Image
 from torchvision.utils import make_grid
 import glob
+import models.attn_injection as attn_injection
+import random
 
 
 def parse_args():
@@ -43,6 +45,27 @@ def fix_randomness(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.enabled = False
+
+
+def register_injection(sd):
+    attn_injection.register_attention_processors(
+        sd.unet,
+        base_dir=None,
+        resnet_mode="default",
+        attn_mode="pnp",
+        share_resblock=True,
+        share_attn=True,
+        share_resnet_layers=[0, 1, 2, 3],
+        share_attn_layers=[0, 1, 2, 3],
+        share_key=True,
+        share_query=True,
+        share_value=False,
+        use_adain=False,
+    )
+
+
+def unset_injection(sd):
+    attn_injection.unset_attention_processors(sd.unet, True, True)
 
 
 def zero_shot_gen(
@@ -186,6 +209,72 @@ def edit_dds(sd, latent, prompt_a, prompt_b, image_path):
     print(f"Done, Image saved as {image_path}")
 
 
+def edit_cpsd(
+    sd: StableDiffusion,
+    latent: torch.Tensor,
+    src_text_prompt,
+    tgt_text_prompt,
+    image_path,
+):
+    latent_orig = latent.data.clone().requires_grad_(False)
+    optimizer = torch.optim.SGD([latent], lr=0.8)
+    decay = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=1, gamma=0.9)
+    n_iter = 200
+
+    image = sd.decode_latents(latent)
+    image_steps = []
+    src_text_embed = sd.get_text_embeds(src_text_prompt)
+    tgt_text_embed = sd.get_text_embeds(tgt_text_prompt)
+    sd.config_ddim_scheduler()
+    inverted_latents, sampled_time_steps = sd.ddim_inverse(
+        start_latents=latent_orig,
+        prompt=src_text_prompt,
+        guidance_scale=5,
+        num_inference_steps=50,
+    )
+
+    for i in range(n_iter):
+        optimizer.zero_grad()
+        # grad_a = sd.calc_grad(sd.get_text_embeds(prompt_a), image, guidance_scale=7.5, latent=latent_orig)
+        # grad_b = sd.calc_grad(sd.get_text_embeds(prompt_b), image, guidance_scale=7.5, latent=latent)
+        # grad_apply = grad_b - grad_a
+        # latent.backward(gradient=grad_apply, retain_graph=True)
+        t_i = random.randint(0, len(inverted_latents) - 1)
+        register_injection(sd)
+        tgt_score = sd.calc_grad_injected(
+            src_text_embed,
+            tgt_text_embed,
+            latents=latent,
+            t_i=t_i,
+            guidance_scale=7.5,
+            # src_latent=latent_orig,
+            intermediate_latents=inverted_latents,
+        )
+        unset_injection(sd)
+        src_score = sd.calc_grad(
+            src_text_embed, image, guidance_scale=7.5, latent=latent, t_overwrite=t_i
+        )
+        # grad = tgt_score - src_score
+        grad = tgt_score
+        latent.backward(gradient=grad, retain_graph=True)
+        optimizer.step()
+
+        if i % 40 == 0:
+            print(f"[INFO] iter {i}, loss {torch.norm(latent.grad)}")
+            image = sd.decode_latents(latent)
+            image_steps.append(image.detach().clone())
+            # decay.step()
+
+    # visualize as grid
+    image_steps = torch.cat(image_steps, dim=0)
+
+    grid = make_grid(image_steps, nrow=5, padding=10)
+    # save
+
+    save_image(grid, image_path)
+    print(f"Done, Image saved as {image_path}")
+
+
 def sd_forward(prompt):
     # prompt_ = "front view of the body of the Hulk wearing blue jeans, photorealistic style."
 
@@ -275,6 +364,14 @@ if __name__ == "__main__":
                 tgt_prompt,
                 f"{out_dir}/image_steps_dds.png",
             )
+        elif method == "cpsd":
+            edit_cpsd(
+                sd_model,
+                latent,
+                src_prompt,
+                tgt_prompt,
+                f"{out_dir}/image_steps_cpsd.png",
+            )
 
     args = parse_args()
     fix_randomness(42)
@@ -313,7 +410,7 @@ if __name__ == "__main__":
         out_dir = os.path.join(out_dir, "edit")
         images_dir = "/root/autodl-tmp/CPSD/data/test_imgs"
         prompt_file = "/root/autodl-tmp/CPSD/data/test_imgs/prompt.txt"
-        src_prompts = []
+        src_prompts = ["a photo of a horse"]
         with open(prompt_file, "r") as f:
             for prompt in f:
                 src_prompts.append(prompt.strip())
@@ -339,6 +436,6 @@ if __name__ == "__main__":
                     out_dir=img_out_dir,
                     src_prompt=src_prompt,
                     tgt_prompt=tgt_prompt,
-                    method="dds",
+                    method="cpsd",
                 )
                 i += 1

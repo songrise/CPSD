@@ -8,6 +8,7 @@
 
 from transformers import CLIPTextModel, CLIPTokenizer, logging
 from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler, DDIMScheduler
+from tqdm import tqdm
 
 # suppress partial model loading warning
 logging.set_verbosity_error()
@@ -90,8 +91,12 @@ class StableDiffusion(nn.Module):
 
         self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
 
-
         print(f"[INFO] loaded stable diffusion!")
+
+    def config_ddim_scheduler(self):
+        self.scheduler = DDIMScheduler(num_train_timesteps=self.num_train_timesteps)
+        self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
+        print(f"[INFO] configured DDIM scheduler!")
 
     def get_text_embeds(self, prompt: list):
         if not isinstance(prompt, list):
@@ -504,6 +509,10 @@ class StableDiffusion(nn.Module):
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         if t_overwrite is not None:
+            if not isinstance(t_overwrite, torch.Tensor):
+                t_overwrite = torch.tensor(
+                    t_overwrite, device=self.device, dtype=torch.long
+                )
             t = t_overwrite
         else:
             t = torch.randint(
@@ -567,9 +576,9 @@ class StableDiffusion(nn.Module):
 
     def calc_grad_injected(
         self,
-        text_embeddings,
-        pred_rgb: torch.Tensor,
-        latent: torch.Tensor,
+        src_text_embed,
+        tgt_text_embed,
+        latents: torch.Tensor,
         t_i,  # index of the time step
         intermediate_latents: torch.Tensor,
         guidance_scale: float = 100,
@@ -595,13 +604,15 @@ class StableDiffusion(nn.Module):
         self.scheduler.set_timesteps(inference_steps)
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         if t_i is None:
-            t = torch.randint(
-                self.min_step,
-                self.max_step + 1,
-                [1],
-                dtype=torch.long,
-                device=self.device,
-            )
+            raise ValueError("t_i is required for DDIM inversion.")
+            # t = torch.randint(
+            #     self.min_step,
+            #     self.max_step + 1,
+            #     [1],
+            #     dtype=torch.long,
+            #     device=self.device,
+            # )
+
         # _t = time.time()
         with torch.no_grad():
             # add noise
@@ -614,18 +625,25 @@ class StableDiffusion(nn.Module):
                     noise = noise_overwrite
             else:
                 noise = torch.randn_like(latents)
-            # latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            latents_noisy = intermediate_latents[-(t_i + 1)]  # from DDIM inversion
-            t = self.scheduler.timesteps[t_i]
+
+            latents_noisy = intermediate_latents[t_i]  # from DDIM inversion
+            reversed_timesteps = list(reversed(self.scheduler.timesteps))
+            t = reversed_timesteps[t_i + 1]
+            # t = self.scheduler.timesteps[t_i]
+            tgt_latents_noisy = self.scheduler.add_noise(latents, noise, t)
             if disentangle:
                 latents_noisy = latents_noisy.repeat(3, 1, 1, 1)
             else:
                 latents_noisy = latents_noisy.repeat(2, 1, 1, 1)
 
             # pred noise
+            # TODO here, only the first should be from ddim
+            # still wrong here is that latents is un-noised, but should be noised
+            latents_noisy[1] = tgt_latents_noisy
             latent_model_input = torch.cat([latents_noisy] * 2)
+            text_embed = torch.cat([src_text_embed, tgt_text_embed], dim=0)  # [4, ...]
             noise_pred = self.unet(
-                latent_model_input, t, encoder_hidden_states=text_embeddings
+                latent_model_input, t, encoder_hidden_states=text_embed
             ).sample
         # torch.cuda.synchronize(); print(f'[TIME] guiding: unet {time.time() - _t:.4f}s')
 
@@ -636,16 +654,19 @@ class StableDiffusion(nn.Module):
         )
 
         # w(t), sigma_t^2
-        w = 1 - self.alphas[t_i]
+        w = 1 - self.alphas[t]
         # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
+        # TODO Jun 07: here should not be noise refer to HIFA.... also, the w is incorrect.
+
         grad = w * (noise_pred - noise)
+        # grad = w * (noise_pred)
 
         # clip grad for stable training?
         # grad = grad.clamp(-1, 1)
         # extract the grad of the stylization term
         grad = grad[-1, ...].unsqueeze(0)
 
-        if latent is None:
+        if latents is None:
             latents.backward(gradient=grad, retain_graph=True)
             # torch.cuda.synchronize(); print(f'[TIME] guiding: backward {time.time() - _t:.4f}s')
 
@@ -824,13 +845,13 @@ class StableDiffusion(nn.Module):
 
         return imgs
 
+    @torch.no_grad()
     def ddim_inverse(
         self,
         start_latents,
         prompt,
         guidance_scale=3.5,
         num_inference_steps=80,
-        num_images_per_prompt=1,
         use_cfg=True,
         negative_prompt="",
         device="cuda",
@@ -884,8 +905,8 @@ class StableDiffusion(nn.Module):
 
             current_t = max(0, t.item() - (1000 // num_inference_steps))  # t
             next_t = t  # min(999, t.item() + (1000//num_inference_steps)) # t+1
-            alpha_t = pipe.scheduler.alphas_cumprod[current_t]
-            alpha_t_next = pipe.scheduler.alphas_cumprod[next_t]
+            alpha_t = self.alphas[current_t]
+            alpha_t_next = self.alphas[next_t]
 
             # Inverted update step (re-arranging the update step to get x(t) (new latents) as a function of x(t-1) (current latents)
             latents = (latents - (1 - alpha_t).sqrt() * noise_pred) * (
@@ -895,7 +916,7 @@ class StableDiffusion(nn.Module):
             # Store
             intermediate_latents.append(latents)
 
-        return torch.cat(intermediate_latents)
+        return torch.cat(intermediate_latents), timesteps
 
 
 # if __name__ == '__main__':

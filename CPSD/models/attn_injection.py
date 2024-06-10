@@ -78,9 +78,11 @@ def my_adain(feat: T) -> T:
     feat_uncond_content, feat_cond_content = feat[0], feat[batch_size]
 
     # inline expand
-    feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(1)
+    feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(
+        1
+    )
     feat_style_mean = feat_style_mean.expand(2, batch_size, *feat_mean.shape[1:])
-    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape)
+    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape) #(6, D)
 
     feat_style_std = torch.stack((feat_std[1], feat_std[batch_size + 1])).unsqueeze(1)
     feat_style_std = feat_style_std.expand(2, batch_size, *feat_std.shape[1:])
@@ -892,14 +894,14 @@ def register_attention_processors(
                             resnet_wrappers.append(
                                 DisentangleSharedResBlockWrapper(resnet_block)
                             )
-                            print(
-                                f"Disentangle resnet feature set for layer {layer_idx_resnet}"
-                            )
+                            # print(
+                            #     f"Disentangle resnet feature set for layer {layer_idx_resnet}"
+                            # )
                         else:
                             resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
-                            print(
-                                f"Share resnet feature set for layer {layer_idx_resnet}"
-                            )
+                            # print(
+                            #     f"Share resnet feature set for layer {layer_idx_resnet}"
+                            # )
 
                     layer_idx_resnet += 1
                 block.resnets = nn.ModuleList(resnet_wrappers)
@@ -945,12 +947,12 @@ def register_attention_processors(
                             inject_query=share_query,
                             inject_key=share_key,
                             inject_value=share_value or layer_idx_attn < 1,
-                            use_adain=use_adain,
+                            # use_adain=use_adain,
                         )
                         self_attn.set_processor(pnp_inject_processor)
-                        print(
-                            f"Pnp inject processor set for self-attention in layer {layer_idx_attn}"
-                        )
+                        # print(
+                        #     f"Pnp inject processor set for self-attention in layer {layer_idx_attn}"
+                        # )
                 elif attn_mode == "style_aligned":
                     sa_args = StyleAlignedArgs(shared_score_shift=0.6)
                     shared_processor = SharedAttentionProcessor(sa_args)
