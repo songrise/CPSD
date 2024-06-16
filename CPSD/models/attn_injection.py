@@ -82,7 +82,7 @@ def my_adain(feat: T) -> T:
         1
     )
     feat_style_mean = feat_style_mean.expand(2, batch_size, *feat_mean.shape[1:])
-    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape) #(6, D)
+    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape)  # (6, D)
 
     feat_style_std = torch.stack((feat_std[1], feat_std[batch_size + 1])).unsqueeze(1)
     feat_style_std = feat_style_std.expand(2, batch_size, *feat_std.shape[1:])
@@ -888,7 +888,7 @@ def register_attention_processors(
                 resnets = block.resnets
                 for resnet_block in resnets:
                     if layer_idx_resnet not in share_resnet_layers:
-                        resnet_wrappers.append(resnet_block)
+                        resnet_wrappers.append(resnet_block)#use original implementation
                     else:
                         if resnet_mode == "disentangle":
                             resnet_wrappers.append(
@@ -993,7 +993,7 @@ def unset_attention_processors(
             resnet_origs = []
             resnets = block.resnets
             for resnet_block in resnets:
-                if isinstance(resnet_block, SharedResBlockWrapper):
+                if isinstance(resnet_block, SharedResBlockWrapper) or isinstance(resnet_block, DisentangleSharedResBlockWrapper):
                     resnet_origs.append(resnet_block.block)
                 else:
                     resnet_origs.append(resnet_block)
