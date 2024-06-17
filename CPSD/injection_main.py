@@ -146,7 +146,7 @@ def sample_disentangled(
 
     latents = latents.repeat(len(prompt), 1, 1, 1)
     # randomly initalize the 1st lantent for generation
-    # latents[1] = generative_latent
+    latents[1] = generative_latent
     # assume that the first latent is used for reconstruction
     for i in tqdm(range(start_step, num_inference_steps)):
         latents[0] = intermediate_latents[(-i + 1)]
@@ -383,8 +383,8 @@ if __name__ == "__main__":
 
     annotation = json.load(open(cfg.annotation))
     for i, entry in enumerate(annotation):
-        if i < 9:
-            continue
+        # if i < 10:
+        #     continue
         utils.exp_utils.seed_all(cfg.seed)
         image_path = entry["image_path"]
         src_prompt = entry["source_prompt"]
@@ -404,8 +404,8 @@ if __name__ == "__main__":
             src_prompt,
             style_prompt=prompt_in,
             num_steps=60,
-            start_step=10,
-            guidance_scale=5,
+            start_step=cfg.start_step,
+            guidance_scale=cfg.style_cfg_scale,
             disentangle=cfg.disentangle,
             share_attn=cfg.share_attn,
             share_resnet_layers=cfg.share_resnet_layers,

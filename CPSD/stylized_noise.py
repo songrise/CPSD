@@ -107,8 +107,11 @@ def sample(
 
         # Predict the noise residual
         used_text_embeddings = (
-            text_embeddings if i > style_step else style_text_embeddings
+            text_embeddings if i < style_step else style_text_embeddings
         )
+        if style_step == 0:
+            used_text_embeddings = style_text_embeddings
+
         noise_pred = pipe.unet(
             latent_model_input, t, encoder_hidden_states=used_text_embeddings
         ).sample
@@ -142,16 +145,18 @@ if __name__ == "__main__":
     # seed all
 
     # sample a image
-    for step in [1, 2, 4, 6, 8, 100]:
+    for step in [50, 40, 30, 25, 20, 15, 10, 5, 0]:
         exp_utils.seed_all(40)
         prompt = ["a cute cat"]
-        style_prompt = ["a cute cat in fauvism style"]
+        style_prompt = ["a cute cat in pencil sketch style"]
         imgs = sample(
             prompt, num_inference_steps=50, style_prompt=style_prompt, style_step=step
         )
 
         for i, img in enumerate(imgs):
-            img.save(f"/root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{step}.png")
+            img.save(
+                f"/root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{50-step}.png"
+            )
             print(
-                f"Image saved as /root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{step}.png"
+                f"Image saved as /root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{50-step}.png"
             )
