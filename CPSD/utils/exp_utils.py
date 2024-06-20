@@ -10,17 +10,31 @@ import torchvision
 
 def make_unique_experiment_path(base_dir: str) -> str:
     """
-    Create a unique directory in the base directory
+    Create a unique directory in the base directory, named as the least unused number.
     return: path to the unique directory
     """
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
-    # Create a folder with a unique name for each experiment according to the process uid
-    experiment_id = str(uuid.uuid4())[
-        :8
-    ]  # Generate a unique identifier for the experiment
-    experiment_output_path = os.path.join(base_dir, experiment_id)
+
+    # List all existing directories
+    existing_dirs = [
+        d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))
+    ]
+
+    # Convert directory names to integers, filter out non-numeric names
+    existing_numbers = sorted([int(d) for d in existing_dirs if d.isdigit()])
+
+    # Find the least unused number
+    experiment_id = 1
+    for number in existing_numbers:
+        if number != experiment_id:
+            break
+        experiment_id += 1
+
+    # Create the new directory
+    experiment_output_path = os.path.join(base_dir, str(experiment_id))
     os.makedirs(experiment_output_path)
+
     return experiment_output_path
 
 

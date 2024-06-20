@@ -1,0 +1,12 @@
+[
+    {
+        "image_path": "/root/autodl-tmp/mama.png",
+        "source_prompt": "A photo of young lady surrounded by pink flowers facing camera ",
+        "target_prompt": "A impressionist painting of young lady surrounded by pink flowers, painterly, Monet. She is facing camera."
+    },
+    {
+        "image_path": "/root/autodl-tmp/mama_2.png",
+        "source_prompt": "A photo of a young lady sitting near lake, facing camera",
+        "target_prompt": "A impressionist painting of a young lady sitting near lake, painterly, Monet. facing camera"
+    }
+]

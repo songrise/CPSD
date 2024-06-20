@@ -125,15 +125,6 @@ def sample(
 
         # Normally we'd rely on the scheduler to handle the supdate step:
         latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
-
-        # Instead, let's do it ourselves:
-        # prev_t = max(1, t.item() - (1000 // num_inference_steps))  # t-1
-        # alpha_t = pipe.scheduler.alphas_cumprod[t.item()]
-        # alpha_t_prev = pipe.scheduler.alphas_cumprod[prev_t]
-        # predicted_x0 = (latents - (1 - alpha_t).sqrt() * noise_pred) / alpha_t.sqrt()
-        # direction_pointing_to_xt = (1 - alpha_t_prev).sqrt() * noise_pred
-        # latents = alpha_t_prev.sqrt() * predicted_x0 + direction_pointing_to_xt
-
     # Post-processing
     images = pipe.decode_latents(latents)
     images = pipe.numpy_to_pil(images)
@@ -144,19 +135,93 @@ def sample(
 if __name__ == "__main__":
     # seed all
 
-    # sample a image
-    for step in [50, 40, 30, 25, 20, 15, 10, 5, 0]:
-        exp_utils.seed_all(40)
-        prompt = ["a cute cat"]
-        style_prompt = ["a cute cat in pencil sketch style"]
-        imgs = sample(
-            prompt, num_inference_steps=50, style_prompt=style_prompt, style_step=step
-        )
+    content_prompt = [
+        "a cute cat",
+        "a tall building",
+        "many people on the street",
+        "a beautiful sunset",
+        "a cozy living room",
+        "a delicious pizza",
+        "a serene mountain landscape",
+        "a colorful flower garden",
+        "a busy city intersection",
+        "a rustic wooden cabin",
+        "a majestic lion",
+        "a peaceful beach scene",
+        "a futuristic cityscape",
+        "a vintage automobile",
+        "a lush rainforest",
+        "a charming small town",
+        "a vibrant farmers market",
+        "a mysterious dark alley",
+        "a grand medieval castle",
+        "a tranquil Japanese garden",
+        "a group of friends enjoying a picnic",
+        "a daring skydiver in action",
+        "a cozy bookshop interior",
+        "a stunning underwater coral reef",
+        "a bustling open-air market",
+        "a serene lakeside cabin",
+        "a historic European town square",
+        "a vibrant street art mural",
+        "a majestic mountain peak at sunrise",
+        "a cozy coffee shop on a rainy day",
+        "a lively music festival scene",
+        "a tranquil bamboo forest",
+        "a colorful hot air balloon festival",
+        "a rustic barn in a countryside setting",
+        "a lively beach volleyball game",
+        "a serene Buddhist temple",
+        "a vibrant neon-lit city at night",
+        "a cozy fireplace in a log cabin",
+        "a garden greenhouse",
+        "a lightning storm over the ocean",
+    ]
 
-        for i, img in enumerate(imgs):
-            img.save(
-                f"/root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{50-step}.png"
-            )
-            print(
-                f"Image saved as /root/autodl-tmp/CPSD/out/sd_style/CSDN/stylenoise_{50-step}.png"
-            )
+    style_prompt = [
+        "in watercolor style",
+        "in fauvism style",
+        "in sketch style",
+        "in pointillism style",
+        "in art deco style",
+        "in impressionism style",
+        "in surrealism style",
+        "in pop art style",
+        "in cubism style",
+        "in abstract expressionism style",
+    ]
+    # sample a image
+    global_step = 0
+    for i, cp in enumerate(content_prompt):
+        for j, sp in enumerate(style_prompt):
+            for step in [50, 40, 30, 25, 20, 15, 10, 5, 0]:
+                exp_utils.seed_all(40)
+                prompt = cp
+                prompt_2 = cp + " " + sp
+                imgs = sample(
+                    [prompt],
+                    num_inference_steps=50,
+                    style_prompt=[prompt_2],
+                    style_step=step,
+                )
+                os.makedirs(
+                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}",
+                    exist_ok=True,
+                )
+                for i, img in enumerate(imgs):
+                    img.save(
+                        f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/stylenoise_{50-step}.png"
+                    )
+                    print(
+                        f"Image saved as /root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/stylenoise_{50-step}.png"
+                    )
+                # also save the prompt as txt
+                with open(
+                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/prompt.txt",
+                    "w",
+                ) as f:
+                    f.write(prompt)
+                    f.write("\n")
+                    f.write(prompt_2)
+
+            global_step += 1

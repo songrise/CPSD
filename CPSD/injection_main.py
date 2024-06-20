@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from models import attn_injection
 from omegaconf import OmegaConf
 from typing import List, Tuple
-import uuid
+
 import omegaconf
 import utils.exp_utils
 import json
@@ -121,6 +121,7 @@ def sample_disentangled(
     num_inference_steps=30,
     num_images_per_prompt=1,
     do_classifier_free_guidance=True,
+    use_content_anchor=True,
     negative_prompt="",
     device=device,
 ):
@@ -146,10 +147,41 @@ def sample_disentangled(
 
     latents = latents.repeat(len(prompt), 1, 1, 1)
     # randomly initalize the 1st lantent for generation
+
+    # TODO Jun 18: here, when use generative latent, should first denoise it for start_step times
+    # for i in tqdm(range(0, start_step)):
+    #     t = pipe.scheduler.timesteps[i]
+
+    #     # Expand the latents if we are doing classifier free guidance
+    #     latent_model_input = (
+    #         torch.cat([generative_latent] * 2)
+    #         if do_classifier_free_guidance
+    #         else generative_latent
+    #     )
+    #     latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, t)
+
+    #     # Predict the noise residual
+    #     noise_pred = pipe.unet(
+    #         latent_model_input, t, encoder_hidden_states=text_embeddings
+    #     ).sample
+
+    #     # Perform guidance
+    #     if do_classifier_free_guidance:
+    #         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+    #         noise_pred = noise_pred_uncond + guidance_scale * (
+    #             noise_pred_text - noise_pred_uncond
+    #         )
+
+    #     generative_latent = pipe.scheduler.step(
+    #         noise_pred, t, generative_latent
+    #     ).prev_sample
+
     latents[1] = generative_latent
     # assume that the first latent is used for reconstruction
     for i in tqdm(range(start_step, num_inference_steps)):
-        latents[0] = intermediate_latents[(-i + 1)]
+
+        if use_content_anchor:
+            latents[0] = intermediate_latents[(-i + 1)]
         t = pipe.scheduler.timesteps[i]
 
         # Expand the latents if we are doing classifier free guidance
@@ -170,16 +202,7 @@ def sample_disentangled(
                 noise_pred_text - noise_pred_uncond
             )
 
-        # Normally we'd rely on the scheduler to handle the update step:
         latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
-
-        # Instead, let's do it ourselves:
-        # prev_t = max(1, t.item() - (1000 // num_inference_steps))  # t-1
-        # alpha_t = pipe.scheduler.alphas_cumprod[t.item()]
-        # alpha_t_prev = pipe.scheduler.alphas_cumprod[prev_t]
-        # predicted_x0 = (latents - (1 - alpha_t).sqrt() * noise_pred) / alpha_t.sqrt()
-        # direction_pointing_to_xt = (1 - alpha_t_prev).sqrt() * noise_pred
-        # latents = alpha_t_prev.sqrt() * predicted_x0 + direction_pointing_to_xt
 
     # Post-processing
     images = pipe.decode_latents(latents)
@@ -265,17 +288,6 @@ def invert(
     return torch.cat(intermediate_latents)
 
 
-# Test our sampling function by generating an image
-# img = sample(
-#     "Watercolor painting of a beach sunset",
-#     negative_prompt="",
-#     num_inference_steps=50,
-# )
-# # save the image
-# for i in img:
-#     i.save("debug.png")
-
-
 def style_image_with_inversion(
     pipe,
     input_image,
@@ -292,6 +304,7 @@ def style_image_with_inversion(
     share_query=True,
     share_value=False,
     use_adain=True,
+    use_content_anchor=True,
     output_dir: str = None,
 ):
     with torch.no_grad():
@@ -326,6 +339,7 @@ def style_image_with_inversion(
             start_step=start_step,
             num_inference_steps=num_steps,
             guidance_scale=guidance_scale,
+            use_content_anchor=use_content_anchor,
         )
     else:
         final_im = sample(
@@ -382,9 +396,9 @@ if __name__ == "__main__":
     # Seed all
 
     annotation = json.load(open(cfg.annotation))
+    with open(os.path.join(experiment_output_path, "annotation.json"), "w") as f:
+        json.dump(annotation, f)
     for i, entry in enumerate(annotation):
-        # if i < 10:
-        #     continue
         utils.exp_utils.seed_all(cfg.seed)
         image_path = entry["image_path"]
         src_prompt = entry["source_prompt"]
@@ -403,7 +417,7 @@ if __name__ == "__main__":
             input_image,
             src_prompt,
             style_prompt=prompt_in,
-            num_steps=60,
+            num_steps=cfg.num_steps,
             start_step=cfg.start_step,
             guidance_scale=cfg.style_cfg_scale,
             disentangle=cfg.disentangle,
@@ -413,6 +427,7 @@ if __name__ == "__main__":
             share_key=cfg.share_key,
             share_query=cfg.share_query,
             share_value=cfg.share_value,
+            use_content_anchor=cfg.use_content_anchor,
             use_adain=cfg.use_adain,
             output_dir=experiment_output_path,
         )
