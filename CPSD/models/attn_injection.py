@@ -456,6 +456,8 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         inject_key: bool = True,
         inject_value: bool = True,
         use_adain: bool = False,
+        name: str = None,
+        temp_dump=False,
     ):
         super().__init__()
 
@@ -465,6 +467,8 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         self.share_enabled = True
         self.use_adain = use_adain
         #!HARDCODED Mar 20: need init a processor for the self-attn in each of transformer block in upsampling path
+        self.DEBUG_dump_attn = temp_dump
+        self.__custom_name = name
 
     def __call__(
         self,
@@ -517,8 +521,8 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
 
         key = attn.to_k(encoder_hidden_states, *args)
         value = attn.to_v(encoder_hidden_states, *args)
-        ######## inject begins here, swap the q k
-        batch_size = query.shape[0] // 2  # 2 since CFG is used
+        ######## inject begins here, here we assume the style image is always the 2nd instance in batch
+        batch_size = query.shape[0] // 2  # divide 2 since CFG is used
         if self.share_enabled and batch_size > 1:  # when == 1, no need to inject,
             ref_q_uncond, ref_q_cond = query[1, ...].unsqueeze(0), query[
                 batch_size + 1, ...
@@ -550,22 +554,30 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
                     )
 
             if self.inject_value:
-                # if self.use_adain:
-                #     value = my_adain(value)
-                # else:
-                inject_v_uncond = [ref_v_uncond] * batch_size
-                inject_v_cond = [ref_v_cond] * batch_size
-                value = torch.cat(
-                    [torch.cat(inject_v_uncond), torch.cat(inject_v_cond)]
-                )
+                if self.use_adain:
+                    value = my_adain(value)
+                else:
+                    inject_v_uncond = [ref_v_uncond] * batch_size
+                    inject_v_cond = [ref_v_cond] * batch_size
+                    value = torch.cat(
+                        [torch.cat(inject_v_uncond), torch.cat(inject_v_cond)]
+                    )
 
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        # dump tensor
+        if self.DEBUG_dump_attn:
+            # save attention probs
+            attn_dim = attention_probs.shape[1]
+            attn_dim = int(attn_dim**0.5)
+            torch.save(
+                attention_probs.detach().clone(),
+                f"/root/autodl-tmp/CPSD/vis_out/attn/attention_probs_{self.__custom_name}_{attn_dim}.pt",
+            )
         # inject here, swap the attention map
-
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
@@ -985,6 +997,8 @@ def register_attention_processors(
                             inject_key=share_key,
                             inject_value=share_value,  # or layer_idx_attn < 1,  # todo why
                             use_adain=use_adain,
+                            name=f"layer_{layer_idx_attn}_self",
+                            temp_dump=False,
                         )
                         self_attn.set_processor(pnp_inject_processor)
                         print(
@@ -994,7 +1008,9 @@ def register_attention_processors(
                             inject_query=False,
                             inject_key=True,
                             inject_value=True,  # or layer_idx_attn < 1,  # todo why
-                            use_adain=use_adain,
+                            use_adain=False,
+                            name=f"layer_{layer_idx_attn}_cross",
+                            temp_dump=False,
                         )
                         cross_attn.set_processor(cross_attn_processor)
                         print(
@@ -1035,6 +1051,7 @@ def unset_attention_processors(
                 self_attn: attention_processor.Attention = transformer_block.attn1
                 cross_attn: attention_processor.Attention = transformer_block.attn2
                 self_attn.set_processor(DefaultAttentionProcessor())
+                cross_attn.set_processor(DefaultAttentionProcessor())
         block_idx += 1
         layer_idx = 0
 

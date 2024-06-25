@@ -1,4 +1,8 @@
 import argparse, os
+
+os.environ["HF_HOME"] = "/root/autodl-tmp/.cache"
+os.environ["TRANSFORMERS_CACHE"] = "/root/autodl-tmp/.cache"
+
 import torch
 import numpy as np
 from omegaconf import OmegaConf

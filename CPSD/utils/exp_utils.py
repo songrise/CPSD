@@ -66,3 +66,8 @@ def seed_all(seed: int):
 
     g_cpu = torch.Generator(device="cpu")
     g_cpu.manual_seed(42)
+
+
+def dump_tensor(tensor, filename):
+    with open(filename) as f:
+        torch.save(tensor, f)

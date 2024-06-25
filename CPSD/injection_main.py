@@ -1,4 +1,9 @@
 # %%
+import argparse, os
+
+os.environ["HF_HOME"] = "/root/autodl-tmp/.cache"
+os.environ["TRANSFORMERS_CACHE"] = "/root/autodl-tmp/.cache"
+
 import torch
 import requests
 import torch.nn as nn
@@ -8,12 +13,11 @@ from io import BytesIO
 from tqdm.auto import tqdm
 from matplotlib import pyplot as plt
 from torchvision import transforms as tfms
-from diffusers import StableDiffusionPipeline, DDIMScheduler
+from diffusers import StableDiffusionPipeline, DDIMScheduler, DiffusionPipeline
 import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
-import os
 from torchvision.utils import save_image
 import argparse
 import PIL.Image as Image
@@ -137,6 +141,7 @@ def sample_disentangled(
 
     # Set num inference steps
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
+    # save
 
     # Create a random starting point if we don't have one already
     # if start_latents is None:
@@ -166,7 +171,7 @@ def sample_disentangled(
     #     ).sample
 
     #     # Perform guidance
-    #     if do_classifier_free_guidance:
+    #     if do_classifier_free_guxidance:
     #         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
     #         noise_pred = noise_pred_uncond + guidance_scale * (
     #             noise_pred_text - noise_pred_uncond
@@ -176,7 +181,7 @@ def sample_disentangled(
     #         noise_pred, t, generative_latent
     #     ).prev_sample
 
-    latents[1] = generative_latent
+    # latents[1] = generative_latent
     # assume that the first latent is used for reconstruction
     for i in tqdm(range(start_step, num_inference_steps)):
 

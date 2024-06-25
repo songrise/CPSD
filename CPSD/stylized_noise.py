@@ -139,14 +139,14 @@ if __name__ == "__main__":
         "a cute cat",
         "a tall building",
         "many people on the street",
-        "a beautiful sunset",
-        "a cozy living room",
+        "an old lawyer",
+        "a young lady in a red dress",
         "a delicious pizza",
         "a serene mountain landscape",
         "a colorful flower garden",
         "a busy city intersection",
         "a rustic wooden cabin",
-        "a majestic lion",
+        "a majestic lion in the wild",
         "a peaceful beach scene",
         "a futuristic cityscape",
         "a vintage automobile",
@@ -172,16 +172,26 @@ if __name__ == "__main__":
         "a rustic barn in a countryside setting",
         "a lively beach volleyball game",
         "a serene Buddhist temple",
-        "a vibrant neon-lit city at night",
+        "a bustling city street at night",
         "a cozy fireplace in a log cabin",
-        "a garden greenhouse",
-        "a lightning storm over the ocean",
+        "a cute girl with a pet dog",
+        "a running cat on a grass field",
+        "a beautiful sunset over the ocean",
+        "a cozy living room with a fireplace",
+        "a delicious pizza with pepperoni",
+        "a serene mountain landscape at sunset",
+        "a colorful flower garden in full bloom",
+        "a busy city intersection at rush hour",
+        "a cup of coffee on a wooden table",
+        "a majestic lion in the wild",
+        "a peaceful beach scene at sunrise",
+        "a futuristic cityscape with flying cars",
     ]
 
     style_prompt = [
         "in watercolor style",
         "in fauvism style",
-        "in sketch style",
+        "in pencil sketch style",
         "in pointillism style",
         "in art deco style",
         "in impressionism style",
@@ -194,7 +204,7 @@ if __name__ == "__main__":
     global_step = 0
     for i, cp in enumerate(content_prompt):
         for j, sp in enumerate(style_prompt):
-            for step in [50, 40, 30, 25, 20, 15, 10, 5, 0]:
+            for step in [50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0]:
                 exp_utils.seed_all(40)
                 prompt = cp
                 prompt_2 = cp + " " + sp
@@ -203,21 +213,22 @@ if __name__ == "__main__":
                     num_inference_steps=50,
                     style_prompt=[prompt_2],
                     style_step=step,
+                    guidance_scale=7.5,
                 )
                 os.makedirs(
-                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}",
+                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise_2/{global_step}",
                     exist_ok=True,
                 )
                 for i, img in enumerate(imgs):
                     img.save(
-                        f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/stylenoise_{50-step}.png"
+                        f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise_2/{global_step}/stylenoise_{50-step}.png"
                     )
                     print(
-                        f"Image saved as /root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/stylenoise_{50-step}.png"
+                        f"Image saved as /root/autodl-tmp/CPSD/out/ablation/stylized_noise_2/{global_step}/stylenoise_{50-step}.png"
                     )
                 # also save the prompt as txt
                 with open(
-                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise/{global_step}/prompt.txt",
+                    f"/root/autodl-tmp/CPSD/out/ablation/stylized_noise_2/{global_step}/prompt.txt",
                     "w",
                 ) as f:
                     f.write(prompt)
