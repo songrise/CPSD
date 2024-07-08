@@ -6,3 +6,5 @@ nohup python stylize.py --start_checkpoint /root/autodl-tmp/gaussian-splatting/o
 nohup python stylize.py --start_checkpoint /root/autodl-tmp/gaussian-splatting/output/pretrain_trex/chkpnt10000.pth -s /root/autodl-tmp/gaussian-splatting/data/trex --model_path patchclip --iterations 10000 &
 
 nohup python stylize.py --start_checkpoint /root/autodl-tmp/gaussian-splatting/output/pretrain_trex/chkpnt10000.pth -s /root/autodl-tmp/gaussian-splatting/data/trex --model_path dds --iterations 10000 &
+
+nohup python injection_main.py --config

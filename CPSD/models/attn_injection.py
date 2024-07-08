@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, StableDiffusionPipeline
 import torch
 import torch.nn as nn
 from torch.nn import functional as nnf
@@ -77,7 +77,7 @@ def my_adain(feat: T) -> T:
     feat_mean, feat_std = calc_mean_std(feat)
     feat_uncond_content, feat_cond_content = feat[0], feat[batch_size]
     # debug_feat_style_uncond, debug_feat_style_cond = feat[1], feat[batch_size + 1]
-    # inline expand
+    # the uncond and cond are handled differently
     feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(
         1
     )
@@ -94,6 +94,50 @@ def my_adain(feat: T) -> T:
     feat[batch_size] = feat_cond_content
     # err_1 = torch.norm(feat[1] - debug_feat_style_uncond)
     # err_2 = torch.norm(feat[batch_size + 1] - debug_feat_style_cond)
+    return feat
+
+
+def my_adain(feat: T) -> T:
+    """
+    AdaIN with negative branch
+    """
+    batch_size = feat.shape[0] // 2
+    feat_mean, feat_std = calc_mean_std(feat)
+    feat_uncond_content, feat_cond_content = feat[0], feat[batch_size]
+    feat_uncond_style, feat_cond_style = feat[1], feat[batch_size + 1]
+    ####AdaIN
+    # the uncond and cond are handled differently
+    feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(
+        1
+    )
+    feat_style_mean = feat_style_mean.expand(2, batch_size, *feat_mean.shape[1:])
+    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape)  # (6, D)
+
+    feat_style_std = torch.stack((feat_std[1], feat_std[batch_size + 1])).unsqueeze(1)
+    feat_style_std = feat_style_std.expand(2, batch_size, *feat_std.shape[1:])
+    feat_style_std = feat_style_std.reshape(*feat_std.shape)
+
+    feat = (feat - feat_mean) / feat_std
+    feat_pos = 1 * feat * feat_style_std + feat_style_mean
+
+    ###Negative AdaIN
+    feat_content_mean = torch.stack((feat_mean[0], feat_mean[batch_size])).unsqueeze(1)
+    feat_content_mean = feat_content_mean.expand(2, batch_size, *feat_mean.shape[1:])
+    feat_content_mean = feat_content_mean.reshape(*feat_mean.shape)
+
+    feat_content_std = torch.stack((feat_std[0], feat_std[batch_size])).unsqueeze(1)
+    feat_content_std = feat_content_std.expand(2, batch_size, *feat_std.shape[1:])
+    feat_content_std = feat_content_std.reshape(*feat_std.shape)
+
+    feat_neg = 0 * ((feat * feat_style_std) + (2 * feat_mean - feat_content_mean))
+
+    feat[0] = feat_uncond_content
+    feat[batch_size] = feat_cond_content
+    feat[1] = feat_uncond_style
+    feat[batch_size + 1] = feat_cond_style
+    feat[2] = (feat_pos + feat_neg)[2]
+    feat[batch_size + 2] = (feat_pos + feat_neg)[batch_size + 2]
+
     return feat
 
 
@@ -115,104 +159,6 @@ class DefaultAttentionProcessor(nn.Module):
         return self.processor(
             attn, hidden_states, encoder_hidden_states, attention_mask
         )
-
-
-# class DumpAttentionProcessor(DefaultAttentionProcessor):
-#     def __init__(
-#         self,
-#         output_dir: str,
-#     ):
-#         super().__init__()
-#         self.output_dir = output_dir
-#         # the processor are inherited from the DefaultAttentionProcessor
-
-#     def __str__(self):
-#         return f"DumpAttn(output_dir={self.output_dir})"
-
-#     def __call__(
-#         self,
-#         attn: Attention,
-#         hidden_states: torch.FloatTensor,
-#         encoder_hidden_states: Optional[torch.FloatTensor] = None,
-#         attention_mask: Optional[torch.FloatTensor] = None,
-#         temb: Optional[torch.FloatTensor] = None,
-#         scale: float = 1.0,
-#     ) -> torch.Tensor:
-#         residual = hidden_states
-
-#         # args = () if USE_PEFT_BACKEND else (scale,)
-#         args = ()
-
-#         if attn.spatial_norm is not None:
-#             hidden_states = attn.spatial_norm(hidden_states, temb)
-
-#         input_ndim = hidden_states.ndim
-
-#         if input_ndim == 4:
-#             batch_size, channel, height, width = hidden_states.shape
-#             hidden_states = hidden_states.view(
-#                 batch_size, channel, height * width
-#             ).transpose(1, 2)
-
-#         batch_size, sequence_length, _ = (
-#             hidden_states.shape
-#             if encoder_hidden_states is None
-#             else encoder_hidden_states.shape
-#         )
-#         attention_mask = attn.prepare_attention_mask(
-#             attention_mask, sequence_length, batch_size
-#         )
-
-#         if attn.group_norm is not None:
-#             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(
-#                 1, 2
-#             )
-
-#         query = attn.to_q(hidden_states, *args)
-
-#         if encoder_hidden_states is None:
-#             encoder_hidden_states = hidden_states
-#         elif attn.norm_cross:
-#             encoder_hidden_states = attn.norm_encoder_hidden_states(
-#                 encoder_hidden_states
-#             )
-
-#         key = attn.to_k(encoder_hidden_states, *args)
-#         value = attn.to_v(encoder_hidden_states, *args)
-
-#         query = attn.head_to_batch_dim(query)
-#         key = attn.head_to_batch_dim(key)
-#         value = attn.head_to_batch_dim(value)
-#         # dump here
-#         # if self.save_self_attention:
-#         query_save = query.clone().detach()
-#         key_save = key.clone().detach()
-#         value_save = value.clone().detach()
-#         torch.save(query_save, f"{self.output_dir}_query.pt")
-#         torch.save(key_save, f"{self.output_dir}_key.pt")
-#         torch.save(value_save, f"{self.output_dir}_value.pt")
-#         del query_save, key_save, value_save
-
-#         attention_probs = attn.get_attention_scores(query, key, attention_mask)
-#         hidden_states = torch.bmm(attention_probs, value)
-#         hidden_states = attn.batch_to_head_dim(hidden_states)
-
-#         # linear proj
-#         hidden_states = attn.to_out[0](hidden_states, *args)
-#         # dropout
-#         hidden_states = attn.to_out[1](hidden_states)
-
-#         if input_ndim == 4:
-#             hidden_states = hidden_states.transpose(-1, -2).reshape(
-#                 batch_size, channel, height, width
-#             )
-
-#         if attn.residual_connection:
-#             hidden_states = hidden_states + residual
-
-#         hidden_states = hidden_states / attn.rescale_output_factor
-
-#         return hidden_states
 
 
 class InjectAttentionProcessor(DefaultAttentionProcessor):
@@ -458,6 +404,7 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         use_adain: bool = False,
         name: str = None,
         temp_dump=False,
+        temp_content_to_style_injection=False,
     ):
         super().__init__()
 
@@ -469,6 +416,7 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         #!HARDCODED Mar 20: need init a processor for the self-attn in each of transformer block in upsampling path
         self.DEBUG_dump_attn = temp_dump
         self.__custom_name = name
+        self.temp_content_to_style_injection = temp_content_to_style_injection
 
     def __call__(
         self,
@@ -537,31 +485,28 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
             if self.inject_query:
                 if self.use_adain:
                     query = my_adain(query)
+                    #!HARDCODED Jul 05: v to the style branch
+                    if self.temp_content_to_style_injection:
+                        content_v_uncond = value[0, ...].unsqueeze(0)
+                        content_v_cond = value[batch_size, ...].unsqueeze(0)
+                        query[1] = content_v_uncond
+                        query[batch_size + 1] = content_v_cond
                 else:
-                    inject_q_uncond = [ref_q_uncond] * batch_size
-                    inject_q_cond = [ref_q_cond] * batch_size
-                    query = torch.cat(
-                        [torch.cat(inject_q_uncond), torch.cat(inject_q_cond)]
-                    )
+                    query[2] = ref_q_uncond
+                    query[batch_size + 2] = ref_q_cond
             if self.inject_key:
                 if self.use_adain:
                     key = my_adain(key)
                 else:
-                    inject_k_uncond = [ref_k_uncond] * batch_size
-                    inject_k_cond = [ref_k_cond] * batch_size
-                    key = torch.cat(
-                        [torch.cat(inject_k_uncond), torch.cat(inject_k_cond)]
-                    )
+                    key[2] = ref_k_uncond
+                    key[batch_size + 2] = ref_k_cond
 
             if self.inject_value:
                 if self.use_adain:
                     value = my_adain(value)
                 else:
-                    inject_v_uncond = [ref_v_uncond] * batch_size
-                    inject_v_cond = [ref_v_cond] * batch_size
-                    value = torch.cat(
-                        [torch.cat(inject_v_uncond), torch.cat(inject_v_cond)]
-                    )
+                    value[2] = ref_v_uncond
+                    value[batch_size + 2] = ref_v_cond
 
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -755,11 +700,14 @@ class SharedAttentionProcessor(DefaultAttentionProcessor):
 
 class DisentangleSharedResBlockWrapper(nn.Module):
 
-    def __init__(self, block: resnet.ResnetBlock2D):
+    def __init__(
+        self, block: resnet.ResnetBlock2D, injection_method: str, name: str = None
+    ):
         super().__init__()
         self.block = block
         self.output_scale_factor = self.block.output_scale_factor
-        self.share_enabled = True
+        self.injection_method = injection_method
+        self.name = name
 
     def forward(
         self,
@@ -767,7 +715,7 @@ class DisentangleSharedResBlockWrapper(nn.Module):
         temb: torch.FloatTensor,
         scale: float = 1.0,
     ):
-        if self.share_enabled:
+        if self.injection_method == "hidden":
             feat = self.block(
                 input_tensor, temb, scale
             )  # when disentangle, feat should be [recon, uncontrolled style, controlled style]
@@ -798,16 +746,56 @@ class DisentangleSharedResBlockWrapper(nn.Module):
                 ([h_content_uncond] * batch_size) + ([h_content_cond] * batch_size),
                 dim=0,
             )
+            # dump
+            if False:
+                # only save the layer 4
+                idx = self.name.split("_")[-1]
+                # if idx >= "4":
+                torch.save(
+                    h_shared,
+                    f"/root/autodl-tmp/CPSD/vis_out/resnet/h_shared_{self.name}.pt",
+                )
             output_feat_shared = (input_tensor + h_shared) / self.output_scale_factor
             # do not inject the feat for the 2nd instance, which is uncontrolled style
             output_feat_shared[1] = feat[1]
             output_feat_shared[batch_size + 1] = feat[batch_size + 1]
-            # uncommon to not inject content to controlled style
+            # uncomment to not inject content to controlled style
             # output_feat_shared[2] = feat[2]
             # output_feat_shared[batch_size + 2] = feat[batch_size + 2]
             return output_feat_shared
+        elif self.injection_method == "pnp":
+            return self.forward_pnp(input_tensor, temb, scale)
         else:
-            return self.block(input_tensor, temb, scale)
+            raise NotImplementedError
+
+    def forward_pnp(
+        self,
+        input_tensor: torch.FloatTensor,
+        temb: torch.FloatTensor,
+        scale: float = 1.0,
+    ):
+
+        feat = self.block(input_tensor, temb, scale)
+        batch_size = feat.shape[0] // 2
+        if batch_size == 1:
+            return feat
+
+        # the features of the reconstruction
+        feat_uncond, feat_cond = feat[0, ...], feat[batch_size, ...]
+        # residual
+        feat[2] = feat_uncond
+        feat[batch_size + 2] = feat_cond
+        if False:
+            # only save the layer 4
+            idx = self.name.split("_")[-1]
+            # if idx >= "4":
+            torch.save(
+                feat,
+                f"/root/autodl-tmp/CPSD/vis_out/resnet/resout_{self.name}.pt",
+            )
+        return feat
+        # else:
+        #     return self.block(input_tensor, temb, scale)
 
 
 class SharedResBlockWrapper(nn.Module):
@@ -876,12 +864,14 @@ def _get_switch_vec(total_num_layers, level):
 
 
 def register_attention_processors(
-    unet: unet_2d_condition.UNet2DConditionModel,
-    attn_mode: str,  # dump or inject
-    resnet_mode: str,
-    base_dir: str,
+    pipe,
+    base_dir: str = None,
+    disentangle: bool = False,
+    attn_mode: str = "disentangled_pnp",
+    resnet_mode: str = "hidden",
     share_resblock: bool = True,
     share_attn: bool = True,
+    share_cross_attn: bool = False,
     share_attn_layers: Optional[int] = None,
     share_resnet_layers: Optional[int] = None,
     share_query: bool = True,
@@ -889,6 +879,7 @@ def register_attention_processors(
     share_value: bool = True,
     use_adain: bool = False,
 ):
+    unet: unet_2d_condition.UNet2DConditionModel = pipe.unet
     if attn_mode == "dump":
         if os.path.exists(base_dir):
             print(f"Dump path ``{base_dir}'' already exists, will be overwritten")
@@ -897,10 +888,12 @@ def register_attention_processors(
         assert os.path.exists(
             base_dir
         ), f"Specified injection path ``{base_dir}'' does not exist"
-
-    up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[
-        1:
-    ]  # skip the first block, which is UpBlock2D
+    if isinstance(pipe, StableDiffusionPipeline):
+        up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[
+            1:
+        ]  # skip the first block, which is UpBlock2D
+    elif isinstance(pipe, StableDiffusionXLPipeline):
+        up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[:-1]
     layer_idx_attn = 0
     layer_idx_resnet = 0
     for block in up_blocks:
@@ -916,21 +909,27 @@ def register_attention_processors(
                             resnet_block
                         )  # use original implementation
                     else:
-                        if resnet_mode == "disentangle":
+                        if disentangle:
                             resnet_wrappers.append(
-                                DisentangleSharedResBlockWrapper(resnet_block)
+                                DisentangleSharedResBlockWrapper(
+                                    resnet_block,
+                                    injection_method=resnet_mode,
+                                    name=f"layer_{layer_idx_resnet}",
+                                )
                             )
-                            # print(
-                            #     f"Disentangle resnet feature set for layer {layer_idx_resnet}"
-                            # )
+                            print(
+                                f"Disentangle resnet {resnet_mode} set for layer {layer_idx_resnet}"
+                            )
                         else:
                             resnet_wrappers.append(SharedResBlockWrapper(resnet_block))
-                            # print(
-                            #     f"Share resnet feature set for layer {layer_idx_resnet}"
-                            # )
+                            print(
+                                f"Share resnet feature set for layer {layer_idx_resnet}"
+                            )
 
                     layer_idx_resnet += 1
-                block.resnets = nn.ModuleList(resnet_wrappers)
+                block.resnets = nn.ModuleList(
+                    resnet_wrappers
+                )  # actually apply the change
         if share_attn:
             for transformer_layer in block.attentions:
                 transformer_block: attention.BasicTransformerBlock = (
@@ -992,6 +991,10 @@ def register_attention_processors(
                         share_attn_layers is not None
                         and layer_idx_attn in share_attn_layers
                     ):
+                        if layer_idx_attn <= 1:
+                            content_to_style = True
+                        else:
+                            content_to_style = False
                         pnp_inject_processor = DisentangledPnPAttentionProcessor(
                             inject_query=share_query,
                             inject_key=share_key,
@@ -999,35 +1002,41 @@ def register_attention_processors(
                             use_adain=use_adain,
                             name=f"layer_{layer_idx_attn}_self",
                             temp_dump=False,
+                            temp_content_to_style_injection=content_to_style,
                         )
                         self_attn.set_processor(pnp_inject_processor)
                         print(
                             f"Disentangled Pnp inject processor set for self-attention in layer {layer_idx_attn}"
                         )
-                        cross_attn_processor = DisentangledPnPAttentionProcessor(
-                            inject_query=False,
-                            inject_key=True,
-                            inject_value=True,  # or layer_idx_attn < 1,  # todo why
-                            use_adain=False,
-                            name=f"layer_{layer_idx_attn}_cross",
-                            temp_dump=False,
-                        )
-                        cross_attn.set_processor(cross_attn_processor)
-                        print(
-                            f"Disentangled Pnp inject processor set for cross-attention in layer {layer_idx_attn}"
-                        )
+                        if share_cross_attn:
+                            cross_attn_processor = DisentangledPnPAttentionProcessor(
+                                inject_query=False,
+                                inject_key=True,
+                                inject_value=True,  # or layer_idx_attn < 1,  # todo why
+                                use_adain=False,
+                                name=f"layer_{layer_idx_attn}_cross",
+                                temp_dump=False,
+                            )
+                            cross_attn.set_processor(cross_attn_processor)
+                            print(
+                                f"Disentangled Pnp inject processor set for cross-attention in layer {layer_idx_attn}"
+                            )
 
                 layer_idx_attn += 1
 
 
 def unset_attention_processors(
-    unet: unet_2d_condition.UNet2DConditionModel,
+    pipe,
     unset_share_attn: bool = False,
     unset_share_resblock: bool = False,
 ):
-    up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[
-        1:
-    ]  # skip the first block, which is UpBlock2D
+    unet: unet_2d_condition.UNet2DConditionMode = pipe.unet
+    if isinstance(pipe, StableDiffusionPipeline):
+        up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[
+            1:
+        ]  # skip the first block, which is UpBlock2D
+    elif isinstance(pipe, StableDiffusionXLPipeline):
+        up_blocks: List[unet_2d_blocks.CrossAttnUpBlock2D] = unet.up_blocks[:-1]
     block_idx = 1
     layer_idx = 0
     for block in up_blocks:

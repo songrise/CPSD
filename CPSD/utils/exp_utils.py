@@ -38,16 +38,16 @@ def make_unique_experiment_path(base_dir: str) -> str:
     return experiment_output_path
 
 
-def get_processed_image(image_dir: str, device) -> torch.Tensor:
+def get_processed_image(image_dir: str, device, resolution) -> torch.Tensor:
     src_img = Image.open(image_dir)
     src_img = transforms.ToTensor()(src_img).unsqueeze(0).to(device)
 
     h, w = src_img.shape[-2:]
     src_img_512 = torchvision.transforms.functional.pad(
-        src_img, ((512 - w) // 2,), fill=0, padding_mode="constant"
+        src_img, ((resolution - w) // 2,), fill=0, padding_mode="constant"
     )
     input_image = F.interpolate(
-        src_img, (512, 512), mode="bilinear", align_corners=False
+        src_img, (resolution, resolution), mode="bilinear", align_corners=False
     )
     # drop alpha channel if it exists
     if input_image.shape[1] == 4:

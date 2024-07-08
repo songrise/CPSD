@@ -200,7 +200,7 @@ else:
     import matplotlib.pyplot as plt
     import numpy as np
 
-    base_dir = "/root/autodl-tmp/CPSD/out/ablation/stylized_noise_2"
+    base_dir = "/root/autodl-tmp/CPSD/out/ablation/stylized_noise_1"
     # load from pickle
     with open(f"{base_dir}/result/clip.pkl", "rb") as f:
         clip_dict = pickle.load(f)
