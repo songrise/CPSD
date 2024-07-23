@@ -874,6 +874,7 @@ def register_attention_processors(
     share_cross_attn: bool = False,
     share_attn_layers: Optional[int] = None,
     share_resnet_layers: Optional[int] = None,
+    c2s_layers: Optional[int] = [0, 1],
     share_query: bool = True,
     share_key: bool = True,
     share_value: bool = True,
@@ -991,7 +992,7 @@ def register_attention_processors(
                         share_attn_layers is not None
                         and layer_idx_attn in share_attn_layers
                     ):
-                        if layer_idx_attn <= 1:
+                        if layer_idx_attn in c2s_layers:
                             content_to_style = True
                         else:
                             content_to_style = False
@@ -1006,7 +1007,7 @@ def register_attention_processors(
                         )
                         self_attn.set_processor(pnp_inject_processor)
                         print(
-                            f"Disentangled Pnp inject processor set for self-attention in layer {layer_idx_attn}"
+                            f"Disentangled Pnp inject processor set for self-attention in layer {layer_idx_attn} with c2s={content_to_style}"
                         )
                         if share_cross_attn:
                             cross_attn_processor = DisentangledPnPAttentionProcessor(

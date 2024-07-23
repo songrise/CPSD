@@ -200,7 +200,7 @@ else:
     import matplotlib.pyplot as plt
     import numpy as np
 
-    base_dir = "/root/autodl-tmp/CPSD/out/ablation/stylized_noise_1"
+    base_dir = "/root/autodl-tmp/CPSD/out/ablation/stylized_noise_2"
     # load from pickle
     with open(f"{base_dir}/result/clip.pkl", "rb") as f:
         clip_dict = pickle.load(f)
@@ -289,6 +289,9 @@ else:
 
     # Calculate mean and standard deviation for each key
     lpips_mean = [np.mean(values) for values in lpips_dict.values()][::-1]
+    # normalize the mean
+    normalize_data_inplace(lpips_mean)
+
     lpips_std = [np.std(values) for values in lpips_dict.values()][::-1]
     # #!HARDCODED Jun 24: replace as style score just for
     clip_mean = clip_style_values[::-1]
@@ -305,7 +308,7 @@ else:
         keys,
         lpips_mean,
         label="Content Modification (LPIPS)",
-        color="#46AEB0",
+        color="#046995",
         linewidth=3,
         marker="o",
         markersize=7,
@@ -323,7 +326,7 @@ else:
         keys,
         clip_mean,
         label="Style Strength (CLIP Style)",
-        color="#E95964",
+        color="#EC3977",
         linewidth=3,
         linestyle="-",
         marker="s",
@@ -390,7 +393,7 @@ else:
             keys,
             content_scores,
             label="Content Modification (Theory)",
-            color="#46AEB0",
+            color="#046995",
             linewidth=3.5,
             linestyle=":",
             marker="P",
@@ -400,7 +403,7 @@ else:
             keys,
             style_scores,
             label="Style Strength (Theory)",
-            color="#E95964",
+            color="#EC3977",
             linewidth=3.5,
             linestyle=":",
             marker="X",
@@ -408,9 +411,9 @@ else:
         )
 
     # Set the title and labels
-    ax.set_title(r"b) Relative Content and Style Over Time", fontsize=14)
+    # ax.set_title(r"b) Relative Content and Style Over Time", fontsize=14)
     ax.set_xlabel(r"Stylization Start Step $\tau$", fontsize=14)
-    ax.set_ylabel("Relative Value", fontsize=14)
+    ax.set_ylabel("Normalized Value", fontsize=14)
 
     # Set the x-ticks positions
     xticks = [0, 10, 20, 30, 40, 50]

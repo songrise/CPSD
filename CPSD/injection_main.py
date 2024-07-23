@@ -283,7 +283,7 @@ def sample_disentangled(
     #         noise_pred, t, generative_latent
     #     ).prev_sample
 
-    # latents[1] = generative_latent
+    latents[1] = generative_latent
     # assume that the first latent is used for reconstruction
     for i in tqdm(range(start_step, num_inference_steps)):
 
@@ -529,6 +529,7 @@ def style_image_with_inversion(
     share_cross_attn=False,
     share_resnet_layers=[0, 1],
     share_attn_layers=[],
+    c2s_layers=[0, 1],
     share_key=True,
     share_query=True,
     share_value=False,
@@ -536,6 +537,8 @@ def style_image_with_inversion(
     use_content_anchor=True,
     output_dir: str = None,
     resnet_mode: str = None,
+    return_intermediate=False,
+    intermediate_latents=None,
 ):
     with torch.no_grad():
         pipe.vae.to(dtype=torch.float32)
@@ -544,10 +547,12 @@ def style_image_with_inversion(
         l = pipe.vae.config.scaling_factor * latent.latent_dist.sample()
         if isinstance(pipe, StableDiffusionXLPipeline):
             pipe.vae.to(dtype=torch.float16)
-
-    inverted_latents = invert(
-        pipe, l, input_image_prompt, num_inference_steps=num_steps
-    )
+    if intermediate_latents is None:
+        inverted_latents = invert(
+            pipe, l, input_image_prompt, num_inference_steps=num_steps
+        )
+    else:
+        inverted_latents = intermediate_latents
 
     attn_injection.register_attention_processors(
         pipe,
@@ -564,6 +569,7 @@ def style_image_with_inversion(
         share_query=share_query,
         share_value=share_value,
         use_adain=use_adain,
+        c2s_layers=c2s_layers,
     )
 
     if disentangle:
@@ -594,7 +600,8 @@ def style_image_with_inversion(
         unset_share_attn=True,
         unset_share_resblock=True,
     )
-
+    if return_intermediate:
+        return final_im, inverted_latents
     return final_im
 
 
@@ -800,6 +807,7 @@ if __name__ == "__main__":
         with open(os.path.join(experiment_output_path, "annotation.json"), "w") as f:
             json.dump(annotation, f)
         for i, entry in enumerate(annotation):
+
             utils.exp_utils.seed_all(cfg.seed)
             image_path = entry["image_path"]
             src_prompt = entry["source_prompt"]
@@ -841,8 +849,10 @@ if __name__ == "__main__":
     elif mode == "single_control_content":
         anno_dir = "/root/autodl-tmp/data/ideogram/annotation_control.json"
         anno = json.load(open(anno_dir))
-        for img_id in range(1, 51):
+        for img_id in range(1, 65):
             # img_id =
+            # if img_id != 3:
+            #     continue
             image_path = anno[img_id - 1]["image_path"]
             # image_path = "/root/autodl-tmp/budin2.png"
             src_prompt = ""
@@ -865,16 +875,17 @@ if __name__ == "__main__":
                 [0, 1, 2, 3, 4, 5, 6, 7],
                 [0, 1, 2, 3, 4, 5, 6, 7, 8],
             ]
-            # for resnet_mode in ["hidden", "pnp"]:
-            for resnet_mode in ["hidden"]:
+            # for resnet_mode in ["hidden"]:
+            for resnet_mode in ["hidden", "pnp"]:
+                crt_xts = None
                 for i, resnet_layer in enumerate(content_control_layers):
-                    imgs = style_image_with_inversion(
+                    imgs, xts = style_image_with_inversion(
                         pipe,
                         input_image,
                         src_prompt,
                         style_prompt=prompt_in,
                         num_steps=50,
-                        start_step=0,
+                        start_step=5,
                         guidance_scale=7.5,
                         disentangle=True,
                         resnet_mode=resnet_mode,
@@ -888,8 +899,13 @@ if __name__ == "__main__":
                         use_adain=True,
                         use_content_anchor=True,
                         output_dir=".",
+                        return_intermediate=True,
+                        intermediate_latents=crt_xts,
                     )
+                    crt_xts = xts
                     temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/fine_grained_control/{img_id}/{resnet_mode}"
+
+                    # temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/fine_grained_control_c2s/{img_id}/{resnet_mode}"
                     if not os.path.exists(temp_save_path):
                         os.makedirs(temp_save_path)
                     # save
@@ -897,13 +913,73 @@ if __name__ == "__main__":
                     result_img.save(
                         f"{temp_save_path}/fine_control_{img_id}_{len(resnet_layer)}.png"
                     )
+                    print(
+                        f"Image saved as {temp_save_path}/fine_control_{img_id}_{len(resnet_layer)}.png"
+                    )
     elif mode == "single_control_style":
-        img_id = 46
+        img_id = 62
         image_path = f"/root/autodl-tmp/data/ideogram/{img_id}.png"
-        src_prompt = "a photo of people in cafe"
-        tgt_prompt = (
-            "B&W cross hatching of a photo of people in cafe, pencil sketch detailed."
-        )
+        tgt_prompt = "A B&W pencil sketch, detailed cross-hatching"
+        input_image = utils.exp_utils.get_processed_image(image_path, device, 512)
+        prompt_in = [
+            "",  # reconstruction
+            tgt_prompt,  # uncontrolled style
+            "",  # controlled style
+        ]
+
+        for c2s_layers in [
+            [],
+            [0, 1],
+            [0, 1, 2, 3],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8],
+            [6, 7, 8],
+        ]:
+            tau = 5
+            inject_style = True
+            # for inject_style in [True, False]:
+            # share_cross = inject_style
+            imgs = style_image_with_inversion(
+                pipe,
+                input_image,
+                "",
+                style_prompt=prompt_in,
+                num_steps=50,
+                start_step=tau,
+                guidance_scale=7.5,
+                disentangle=True,
+                resnet_mode="hidden",
+                share_attn=True,
+                share_cross_attn=True,
+                share_resnet_layers=[0, 1, 2, 3],
+                share_attn_layers=[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                share_key=True,
+                share_query=True,
+                share_value=False,
+                use_adain=True,
+                use_content_anchor=True,
+                output_dir=".",
+                c2s_layers=c2s_layers,
+            )
+            temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/c2s_control/{img_id}/style"
+            if not os.path.exists(temp_save_path):
+                os.makedirs(temp_save_path)
+            # save
+            result_img_style = imgs[1]
+            result_img = imgs[2]
+            result_img_style.save(
+                f"{temp_save_path}/style_{img_id}_{c2s_layers}_{tau}.png"
+            )
+            result_img.save(
+                f"{temp_save_path}/c2s_control_{img_id}_{c2s_layers}_{tau}.png"
+            )
+            print(
+                f"Image saved as {temp_save_path}/c2s_control_{img_id}_{c2s_layers}_{tau}.png"
+            )
+    elif mode == "tau":
+        img_id = 0
+        image_path = f"/root/autodl-tmp/data/standard/horse.png"
+        src_prompt = ""
+        tgt_prompt = "A Fauvism painting"
         input_image = utils.exp_utils.get_processed_image(image_path, device, 512)
         prompt_in = [
             src_prompt,  # reconstruction
@@ -911,7 +987,7 @@ if __name__ == "__main__":
             tgt_prompt,  # controlled style
         ]
 
-        for share_cross in [True, False]:
+        for start_step in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]:
             inject_style = True
             # for inject_style in [True, False]:
             # share_cross = inject_style
@@ -920,30 +996,142 @@ if __name__ == "__main__":
                 input_image,
                 src_prompt,
                 style_prompt=prompt_in,
-                num_steps=60,
-                start_step=10,
+                num_steps=50,
+                start_step=start_step,
                 guidance_scale=7.5,
                 disentangle=True,
                 resnet_mode="hidden",
-                share_attn=inject_style,
-                share_cross_attn=inject_style,
-                share_resnet_layers=[0, 1, 2, 3, 4],
-                share_attn_layers=[0, 1, 2, 3, 4, 5, 6, 7, 8],
-                share_key=inject_style,
-                share_query=inject_style,
+                share_attn=False,
+                share_cross_attn=False,
+                share_resnet_layers=[],
+                share_attn_layers=[],
+                share_key=False,
+                share_query=False,
                 share_value=False,
                 use_adain=True,
                 use_content_anchor=True,
                 output_dir=".",
             )
-            temp_save_path = (
-                f"/root/autodl-tmp/CPSD/vis_out/fine_grained_control/{img_id}/style"
-            )
+            temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/tau"
             if not os.path.exists(temp_save_path):
                 os.makedirs(temp_save_path)
             # save
             result_img = imgs[2]
-            result_img.save(f"{temp_save_path}/fine_control_{img_id}_{share_cross}.png")
-            print(
-                f"Image saved as {temp_save_path}/fine_control_{img_id}_{share_cross}.png"
+            result_img.save(f"{temp_save_path}/tau_{img_id}_{start_step}.png")
+            print(f"Image saved as {temp_save_path}/tau_{img_id}_{start_step}.png")
+    elif mode == "explore":
+        # randomly sample a img id, randomly sample a style prompt
+        import random
+
+        while True:
+            annotation = json.load(
+                open("/root/autodl-tmp/data/ideogram/annotation.json")
             )
+            # img_id = random.randint(1, 73)
+            img_id = [74, 75, 76, 77, 78][random.randint(0, 4)]
+            image_path = f"/root/autodl-tmp/CPSD/data/horse.png"
+            src_prompt = ""
+            # style_id = [4, 6, 24, 69, 64, 30, 31, 18, 14, 62, 35, 33, 44, 43][
+            #     random.randint(0, 12)
+            # ]
+            temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/cfg/horse"
+            style_id = random.randint(1, 72)
+            # temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/explore/{img_id}"
+            # if the style image already exists, skip
+            if os.path.exists(f"{temp_save_path}/style_{style_id}.png"):
+                continue
+            tgt_prompt = annotation[style_id]["target_prompt"]
+            input_image = utils.exp_utils.get_processed_image(image_path, device, 512)
+            prompt_in = [
+                src_prompt,  # reconstruction
+                tgt_prompt,  # uncontrolled style
+                tgt_prompt,  # controlled style
+            ]
+            imgs = style_image_with_inversion(
+                pipe,
+                input_image,
+                src_prompt,
+                style_prompt=prompt_in,
+                num_steps=50,
+                start_step=0,
+                guidance_scale=7.5,
+                disentangle=True,
+                resnet_mode="hidden",
+                share_attn=True,
+                share_cross_attn=True,
+                share_resnet_layers=[0, 1, 2, 3],
+                share_attn_layers=[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                share_key=True,
+                share_query=True,
+                share_value=False,
+                use_adain=True,
+                use_content_anchor=True,
+                output_dir=".",
+            )
+
+            if not os.path.exists(temp_save_path):
+                os.makedirs(temp_save_path)
+            # save
+            result_img = imgs[2]
+            result_img.save(f"{temp_save_path}/style_{style_id}.png")
+            print(f"{temp_save_path}/style_{style_id}.png")
+    elif mode == "cfg":
+        # randomly sample a img id, randomly sample a style prompt
+        import random
+
+        while True:
+            annotation = json.load(
+                open("/root/autodl-tmp/data/ideogram/annotation.json")
+            )
+            img_id = 13
+
+            image_path = f"/root/autodl-tmp/data/misc/trump.png"
+            src_prompt = ""
+            # style_id = [4, 6, 24, 69, 64, 30, 31, 18, 14, 62, 35, 33, 44, 43][
+            #     random.randint(0, 12)
+            # ]
+            temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/cfg/trump"
+            # if the style image already exists, skip
+            for cfg in [3.5, 5.0, 7.5, 10.0]:
+                for tgt_prompt in [
+                    # "Expressionist painting",
+                    "Expressionist style painting by Edvard Munch, abstract.",
+                    # "Fauvism style painting, bold brush stroke",
+                    # "Expressionist style painting, detailed brush stroke, warm colors",
+                ]:
+                    input_image = utils.exp_utils.get_processed_image(
+                        image_path, device, 512
+                    )
+                    prompt_in = [
+                        src_prompt,  # reconstruction
+                        tgt_prompt,  # uncontrolled style
+                        tgt_prompt,  # controlled style
+                    ]
+                    imgs = style_image_with_inversion(
+                        pipe,
+                        input_image,
+                        src_prompt,
+                        style_prompt=prompt_in,
+                        num_steps=50,
+                        start_step=0,
+                        guidance_scale=cfg,
+                        disentangle=True,
+                        resnet_mode="hidden",
+                        share_attn=True,
+                        share_cross_attn=True,
+                        share_resnet_layers=[0, 1, 2, 3],
+                        share_attn_layers=[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                        share_key=True,
+                        share_query=True,
+                        share_value=False,
+                        use_adain=True,
+                        use_content_anchor=True,
+                        output_dir=".",
+                    )
+
+                    if not os.path.exists(temp_save_path):
+                        os.makedirs(temp_save_path)
+                    # save
+                    result_img = imgs[2]
+                    result_img.save(f"{temp_save_path}/{cfg}_{tgt_prompt}.png")
+                    print(f"{temp_save_path}/{cfg}_{tgt_prompt}.png")

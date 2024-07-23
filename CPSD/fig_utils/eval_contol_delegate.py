@@ -1,6 +1,6 @@
 # %%
 import clip
-from lpips_pytorch import LPIPS
+from lpips import LPIPS
 import torch
 import torch.nn.functional as F
 import os
@@ -12,17 +12,17 @@ import PIL.Image as Image
 import re
 
 
-base_dir = "/root/autodl-tmp/CPSD/vis_out/ablate_delegation"
+base_dir = "/root/autodl-tmp/CPSD/vis_out/ablate_delegation_new"
 
 content_color = "#045985"  # Blue
 style_color = "#EC3977"  # Pink
-mode = "calc"
+mode = "calsc"
 if mode == "calc":
-    focus = "content"
+    focus = "style"
     clip_model = (
         clip.load("ViT-B/16", jit=False)[0].eval().requires_grad_(False).to("cuda")
     )
-    lpips_model = LPIPS(net_type="vgg").to("cuda")
+    lpips_model = LPIPS(net="vgg").to("cuda")
     content_prompt = [
         "a cute fluffy cat with bright green eyes playing",
         "a tall glass skyscraper reaching high into the clouds",
@@ -166,7 +166,7 @@ if mode == "calc":
         "50": [],
     }
 
-    for injection_level in [-1]:
+    for injection_level in [1]:
         for tau in ["5", "10", "15", "20", "25", "30", "35", "40", "45", "50"]:
             subdir = f"{base_dir}/tau_{tau}/{focus}_{injection_level}/"
             for imgs in glob.glob(f"{subdir}/*.png"):
@@ -241,10 +241,10 @@ else:
     line_width = 3
 
     base_dir = "/root/autodl-tmp/CPSD/vis_out/ablate_delegation"
-    content_idx = -1
+    content_idx = 0
     style_idx = content_idx
     # load from pickle
-    focus = "content"
+    focus = "style"
 
     # del clip_dict["15"]
     with open(f"{base_dir}/{focus}_{content_idx}_lpips.pkl", "rb") as f:
@@ -282,7 +282,7 @@ else:
     # calculate percentil of clip style
     clip_style_values = [sum(sublist) / len(sublist) for sublist in clip_dict.values()]
 
-    normalize_data_inplace(clip_style_values)
+    # normalize_data_inplace(clip_style_values)
 
     # Update the dictionaries with the processed data
     lpips_dict_processed = {}
@@ -312,6 +312,125 @@ else:
     fig, ax = plt.subplots(figsize=(7, 4.5))
     keys = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     # Plot the mean curve and the shaded region for LPIPS
+    if focus == "content":  # plot upper bound
+        uncontrolled_content = [
+            0.8436280071550781,
+            0.7432659436886719,
+            0.6082894277257476,
+            0.46761277699729736,
+            0.3442963862894525,
+            0.23845040554129743,
+            0.15020915887478334,
+            0.08333844913144473,
+            0.03779865027634021,
+            0.011826624269346407,
+            0,
+        ]
+        max_uncontrolled_content = max(uncontrolled_content)
+        # normalize uncontrolled content, and the content_score using the max value
+        uncontrolled_content = [
+            x / max_uncontrolled_content for x in uncontrolled_content
+        ]
+        lpips_mean = [x / max_uncontrolled_content for x in lpips_mean]
+
+        uncontrolled_style = [
+            0.526,
+            0.438,
+            0.344,
+            0.252,
+            0.19,
+            0.15,
+            0.122,
+            0.114,
+            0.11,
+            0.106,
+            0.1,
+        ]
+        max_uncontrolled_style = max(uncontrolled_style)
+        # normalize uncontrolled content, and the content_score using the max value
+        uncontrolled_style = [x / max_uncontrolled_style for x in uncontrolled_style]
+        clip_mean = [x / max_uncontrolled_style for x in clip_mean]
+
+        ax.plot(
+            keys,
+            uncontrolled_content,
+            label="Content Modification (w/o content control)",
+            color=content_color,
+            linewidth=line_width,
+            linestyle="--",
+            marker="P",
+            markersize=7,
+            alpha=line_alpha,
+        )
+        ax.plot(
+            keys,
+            uncontrolled_style,
+            label="Style Strength (w/o content control)",
+            color=style_color,
+            linewidth=line_width,
+            linestyle="--",
+            marker="X",
+            markersize=7,
+            alpha=line_alpha,
+        )
+    if focus == "style":  # plot lower bound
+        uncontrolled_content = [
+            0.6297541249795648,
+            0.41919996562184264,
+            0.3337598163680474,
+            0.2646224593932166,
+            0.20097911527499307,
+            0.14156115910263273,
+            0.09577791680155585,
+            0.06045422406222578,
+            0.032316110937234035,
+            0.009408131074687905,
+            0,
+        ]
+
+        uncontrolled_content = [
+            0.5250192779682478,
+            0.37607702451741487,
+            0.3062213401576595,
+            0.24516020248418222,
+            0.18783412219695517,
+            0.13630733925238403,
+            0.09301406679419189,
+            0.057561558457034354,
+            0.029772007667804457,
+            0.008419782831535244,
+            0,
+        ]
+        max_uncontrolled_content = max(uncontrolled_content)
+        # normalize uncontrolled content, and the content_score using the max value
+        uncontrolled_content = [
+            x / max_uncontrolled_content for x in uncontrolled_content
+        ]
+        lpips_mean = [x / max_uncontrolled_content for x in lpips_mean]
+
+        uncontrolled_style = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        ax.plot(
+            keys,
+            uncontrolled_content,
+            label="Content Modification (w/o style control)",
+            color=content_color,
+            linewidth=line_width,
+            linestyle="--",
+            marker="P",
+            markersize=7,
+            alpha=line_alpha,
+        )
+        ax.plot(
+            keys,
+            uncontrolled_style,
+            label="Style Strength (w/o style control)",
+            color=style_color,
+            linewidth=line_width,
+            linestyle="--",
+            marker="X",
+            markersize=7,
+            alpha=line_alpha,
+        )
     ax.plot(
         keys,
         lpips_mean,
@@ -322,15 +441,7 @@ else:
         markersize=7,
         alpha=line_alpha,
     )
-    # ax.fill_between(
-    #     keys,
-    #     [m - s for m, s in zip(lpips_mean, lpips_std)],
-    #     [m + s for m, s in zip(lpips_mean, lpips_std)],
-    #     alpha=0.2,
-    #     color="#46AEA0",
-    # )
 
-    # Plot the mean curve and the shaded region for CLIP
     ax.plot(
         keys,
         clip_mean,
@@ -398,6 +509,7 @@ else:
         keys = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 49]
         content_scores = content_scores[keys][::-1]
         style_scores = style_scores[keys][::-1]
+
         ax.plot(
             keys,
             content_scores,
@@ -420,106 +532,7 @@ else:
             markersize=7,
             alpha=line_alpha,
         )
-    if focus == "content":  # plot upper bound
-        uncontrolled_content = [
-            0.8436280071550781,
-            0.7432659436886719,
-            0.6082894277257476,
-            0.46761277699729736,
-            0.3442963862894525,
-            0.23845040554129743,
-            0.15020915887478334,
-            0.08333844913144473,
-            0.03779865027634021,
-            0.011826624269346407,
-            0,
-        ]
-        uncontrolled_style = [
-            1.0,
-            0.7934272300469482,
-            0.572769953051643,
-            0.35680751173708913,
-            0.21126760563380279,
-            0.1173708920187793,
-            0.051643192488262886,
-            0.03286384976525821,
-            0.023474178403755853,
-            0.014084507042253499,
-            0,
-        ]
-        ax.plot(
-            keys,
-            uncontrolled_content,
-            label="Content Modification (w/o content control)",
-            color=content_color,
-            linewidth=line_width,
-            linestyle="--",
-            marker="P",
-            markersize=7,
-            alpha=line_alpha,
-        )
-        ax.plot(
-            keys,
-            uncontrolled_style,
-            label="Style Strength (w/o content control)",
-            color=style_color,
-            linewidth=line_width,
-            linestyle="--",
-            marker="X",
-            markersize=7,
-            alpha=line_alpha,
-        )
-    if focus == "style" and True:  # plot lower bound
-        uncontrolled_content = [
-            0.6297541249795648,
-            0.41919996562184264,
-            0.3337598163680474,
-            0.2646224593932166,
-            0.20097911527499307,
-            0.14156115910263273,
-            0.09577791680155585,
-            0.06045422406222578,
-            0.032316110937234035,
-            0.009408131074687905,
-            0,
-        ]
 
-        uncontrolled_content = [
-            0.5250192779682478,
-            0.37607702451741487,
-            0.3062213401576595,
-            0.24516020248418222,
-            0.18783412219695517,
-            0.13630733925238403,
-            0.09301406679419189,
-            0.057561558457034354,
-            0.029772007667804457,
-            0.008419782831535244,
-            0,
-        ]
-        uncontrolled_style = [0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        ax.plot(
-            keys,
-            uncontrolled_content,
-            label="Content Modification (w/o style control)",
-            color=content_color,
-            linewidth=line_width,
-            linestyle="--",
-            marker="P",
-            markersize=7,
-            alpha=line_alpha,
-        )
-        ax.plot(
-            keys,
-            uncontrolled_style,
-            label="Style Strength (w/o style control)",
-            color=style_color,
-            linewidth=line_width,
-            linestyle="--",
-            marker="X",
-            markersize=7,
-            alpha=line_alpha,
-        )
     # Set the title and labels
     ax.set_title(r"b) Relative Content and Style Over Time", fontsize=14)
     ax.set_xlabel(r"Stylization Start Step $\tau$", fontsize=14)

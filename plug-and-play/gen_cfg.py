@@ -2,13 +2,13 @@ import os
 import json
 
 # Define the base directory for the configurations
-base_dir = "/root/autodl-tmp/plug-and-play/configs/my_compare"
+base_dir = "/root/autodl-tmp/plug-and-play/configs/std"
 
 # Ensure the directory exists
 os.makedirs(base_dir, exist_ok=True)
 
 # Define the number of configurations to generate
-N = 24
+N = 4
 
 # Template for the configuration file
 config_template = """config:
@@ -31,7 +31,7 @@ print(f"Generated {N} configuration files in {base_dir}")
 
 
 # Define the base directory for the configurations
-base_dir = "/root/autodl-tmp/plug-and-play/configs/my_compare_gen"
+base_dir = "/root/autodl-tmp/plug-and-play/configs/std_compare_gen"
 
 # Ensure the directory exists
 os.makedirs(base_dir, exist_ok=True)
@@ -40,7 +40,7 @@ os.makedirs(base_dir, exist_ok=True)
 
 
 # Path to the annotation file
-annotation_file = "/root/autodl-tmp/data/ideogram/annotation.json"
+annotation_file = "/root/autodl-tmp/data/standard/annotation.json"
 
 # Read the annotation file
 with open(annotation_file, "r") as file:

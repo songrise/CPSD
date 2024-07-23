@@ -1,4 +1,9 @@
 # %%
+import argparse, os
+
+os.environ["HF_HOME"] = "/root/autodl-tmp/.cache"
+os.environ["TRANSFORMERS_CACHE"] = "/root/autodl-tmp/.cache"
+
 import torch
 import requests
 import torch.nn as nn
@@ -193,16 +198,16 @@ if __name__ == "__main__":
     ]
     # sample a image
     content_injection_layers = [
-        None,
+        # None,
         # [0],
-        # [0, 1, 2, 3],
+        [0, 1, 2, 3],
         # [0, 1, 2, 3, 4, 5, 6, 7],
         # [0, 1, 2, 3, 4, 5],
     ]
     style_injection_layers = [
-        None,
+        # None,
         # [0],
-        [0, 1, 2, 3],
+        # [0, 1, 2, 3],
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
         # [0, 1, 2, 3, 4, 5],
     ]
@@ -211,6 +216,7 @@ if __name__ == "__main__":
     total_step_T = 50
     for start_step_tau in [50, 45, 40, 35, 30, 25, 20, 15, 10, 5]:
         for c_i, c_layer in enumerate(content_injection_layers):
+
             # for s_i, s_layer in enumerate(style_injection_layers):
             s_layer = [0, 1, 2, 3, 4, 5, 6, 7, 8]
             s_i = 1
@@ -248,10 +254,13 @@ if __name__ == "__main__":
                         share_attn_layers=s_layer,
                         share_value=False,
                         use_adain=True,
+                        attn_mode="disentangled_pnp",
+                        resnet_mode="hidden",
+                        disentangle=True,
                     )
 
                     # full_style_prompt = sp + " " + cp
-                    prompt_in = [cp, sp, ""]
+                    prompt_in = ["", sp, ""]
                     x_0s = sample(
                         start_step=total_step_T - start_step_tau + 1,
                         start_latents=x_tau,
@@ -267,7 +276,7 @@ if __name__ == "__main__":
 
                     content, style, final = x_0s  # PIL images
 
-                    out_folder = f"/root/autodl-tmp/CPSD/vis_out/ablate_delegation/tau_{start_step_tau}/content_{c_i}/"
+                    out_folder = f"/root/autodl-tmp/CPSD/vis_out/ablate_delegation_new/tau_{start_step_tau}/content_1/"
                     os.makedirs(out_folder, exist_ok=True)
                     content.save(
                         f"{out_folder}/{i}_{j}_content.png",
