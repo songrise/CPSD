@@ -2,25 +2,31 @@ import os
 import json
 
 # Define the base directory for the configurations
-base_dir = "/root/autodl-tmp/plug-and-play/configs/std"
+base_dir = "/root/autodl-tmp/plug-and-play/configs/picked_extract"
+# Path to the annotation file
+annotation_file = "/root/autodl-tmp/data/ideogram/annotation_picked.json"
+
+# Read the annotation file
+with open(annotation_file, "r") as file:
+    annotations = json.load(file)
 
 # Ensure the directory exists
 os.makedirs(base_dir, exist_ok=True)
 
 # Define the number of configurations to generate
-N = 4
+N = 8
 
 # Template for the configuration file
 config_template = """config:
   experiment_name: "ideogram_{N}"
-  init_img: "/root/autodl-tmp/data/ideogram/{N}.png"
+  init_img: "{path}"
   ddim_steps: 50 # we use 999 steps for the best reconstruction
   save_feature_timesteps: 50
 """
 
 # Generate and save the configuration files
-for i in range(1, N + 1):
-    config_content = config_template.format(N=i)
+for i in range(7, N):
+    config_content = config_template.format(N=i, path=annotations[i]["image_path"])
     config_filename = f"ideogram_{i}.yaml"
     config_path = os.path.join(base_dir, config_filename)
 
@@ -31,20 +37,13 @@ print(f"Generated {N} configuration files in {base_dir}")
 
 
 # Define the base directory for the configurations
-base_dir = "/root/autodl-tmp/plug-and-play/configs/std_compare_gen"
+base_dir = "/root/autodl-tmp/plug-and-play/configs/picked"
 
 # Ensure the directory exists
 os.makedirs(base_dir, exist_ok=True)
 
 # Define the number of configurations to generate
 
-
-# Path to the annotation file
-annotation_file = "/root/autodl-tmp/data/standard/annotation.json"
-
-# Read the annotation file
-with open(annotation_file, "r") as file:
-    annotations = json.load(file)
 
 # Template for the configuration file
 config_template = """source_experiment_name: "ideogram_{N}"  # the experiment name of the source image
@@ -66,9 +65,9 @@ negative_prompt_schedule: "linear"
 """
 
 # Generate and save the configuration files
-for i in range(1, N + 1):
+for i in range(7, N):
     # Get the corresponding annotation
-    annotation = annotations[i - 1]
+    annotation = annotations[i]
     src_prompt = annotation["source_prompt"]
     tgt_prompt = annotation["target_prompt"]
 

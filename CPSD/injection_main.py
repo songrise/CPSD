@@ -284,8 +284,9 @@ def sample_disentangled(
     #     ).prev_sample
 
     latents[1] = generative_latent
+    # latents[2] = 0.9 * latents[2] + 0.1 * generative_latent
     # assume that the first latent is used for reconstruction
-    for i in tqdm(range(start_step, num_inference_steps)):
+    for i in tqdm(range(start_step, num_inference_steps), desc="Stylizing"):
 
         if use_content_anchor:
             latents[0] = intermediate_latents[(-i + 1)]
@@ -471,7 +472,11 @@ def invert(
     # Reversed timesteps <<<<<<<<<<<<<<<<<<<<
     timesteps = reversed(pipe.scheduler.timesteps)
 
-    for i in tqdm(range(1, num_inference_steps), total=num_inference_steps - 1):
+    for i in tqdm(
+        range(1, num_inference_steps),
+        total=num_inference_steps - 1,
+        desc="DDIM Inversion",
+    ):
 
         # We'll skip the final iteration
         if i >= num_inference_steps - 1:
@@ -558,7 +563,7 @@ def style_image_with_inversion(
         pipe,
         base_dir=output_dir,
         resnet_mode=resnet_mode,
-        attn_mode="disentangled_pnp" if disentangle else "pnp",
+        attn_mode="artist" if disentangle else "pnp",
         disentangle=disentangle,
         share_resblock=True,
         share_attn=share_attn,
@@ -648,7 +653,7 @@ def style_image_with_inversion_reference(
         pipe,
         base_dir=output_dir,
         resnet_mode=resnet_mode,
-        attn_mode="disentangled_pnp" if disentangle else "pnp",
+        attn_mode="artist" if disentangle else "pnp",
         disentangle=disentangle,
         share_resblock=True,
         share_attn=share_attn,
@@ -696,33 +701,48 @@ def style_image_with_inversion_reference(
 
 if __name__ == "__main__":
 
-    # Load a pipeline
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "stabilityai/stable-diffusion-2-1-base"
-    ).to(device)
-
-    # pipe = DiffusionPipeline.from_pretrained(
-    #     # "playgroundai/playground-v2-1024px-aesthetic",
-    #     torch_dtype=torch.float16,
-    #     use_safetensors=True,
-    #     add_watermarker=False,
-    #     variant="fp16",
-    # )
-    # pipe.to("cuda")
-
-    # Set up a DDIM scheduler
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
     parser = argparse.ArgumentParser(description="Stable Diffusion with OmegaConf")
     parser.add_argument(
         "--config", type=str, default="config.yaml", help="Path to the config file"
     )
     # mode = "single_control_content"
-    mode = "text"
-    if mode == "text":
-        args = parser.parse_args()
-        config_dir = args.config
-        cfg = OmegaConf.load(config_dir)
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="dataset",
+        choices=["dataset", "cli", "app"],
+        help="Path to the config file",
+    )
+    # mode = "single_control_content"
+    args = parser.parse_args()
+    config_dir = args.config
+    mode = args.mode
+    cfg = OmegaConf.load(config_dir)
+    args = parser.parse_args()
+    config_dir = args.config
+    cfg = OmegaConf.load(config_dir)
+
+    # Load a pipeline
+    if cfg.model == "sd":
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-2-1-base"
+        ).to(device)
+    elif cfg.model == "playground":
+        pipe = DiffusionPipeline.from_pretrained(
+            "playgroundai/playground-v2-1024px-aesthetic",
+            torch_dtype=torch.float16,
+            use_safetensors=True,
+            add_watermarker=False,
+            variant="fp16",
+        )
+        pipe.to("cuda")
+
+    # Set up a DDIM scheduler
+    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+
+    mode_override = "dataset"
+    mode = mode_override
+    if mode == "dataset":
 
         base_output_path = cfg.out_path
         if not os.path.exists(cfg.out_path):
@@ -785,9 +805,6 @@ if __name__ == "__main__":
                 img.save(f"{experiment_output_path}/out_{i}_{j}.png")
                 print(f"Image saved as {experiment_output_path}/out_{i}_{j}.png")
     elif mode == "image_style":
-        args = parser.parse_args()
-        config_dir = args.config
-        cfg = OmegaConf.load(config_dir)
 
         base_output_path = cfg.out_path
         if not os.path.exists(cfg.out_path):
@@ -1135,3 +1152,57 @@ if __name__ == "__main__":
                     result_img = imgs[2]
                     result_img.save(f"{temp_save_path}/{cfg}_{tgt_prompt}.png")
                     print(f"{temp_save_path}/{cfg}_{tgt_prompt}.png")
+    elif mode == "seed_var":
+        # for img_id in range(81, 90):
+        # image_path = f"/root/autodl-tmp/data/ideogram/{img_id}.png"
+        # tgt_prompt = "A B&W pencil sketch, detailed cross-hatching"
+        # img_id = "horse"
+        # image_path = "/root/autodl-tmp/data/standard/horse.png"
+        annotation = json.load(open("/root/autodl-tmp/data/ideogram/annotation.json"))
+        img_id = 35
+        image_path = annotation[img_id - 1]["image_path"]
+        tgt_prompt = annotation[img_id - 1]["target_prompt"]
+        input_image = utils.exp_utils.get_processed_image(image_path, device, 512)
+        prompt_in = [
+            "",  # reconstruction
+            tgt_prompt,  # uncontrolled style
+            "",  # controlled style
+        ]
+
+        for seed in [0, 1, 2, 3, 4, 5, 6]:
+            utils.exp_utils.seed_all(seed)
+            tau = 0
+            inject_style = True
+            # for inject_style in [True, False]:
+            # share_cross = inject_style
+            imgs = style_image_with_inversion(
+                pipe,
+                input_image,
+                "",
+                style_prompt=prompt_in,
+                num_steps=50,
+                start_step=tau,
+                guidance_scale=7.5,
+                disentangle=True,
+                resnet_mode="hidden",
+                share_attn=True,
+                share_cross_attn=True,
+                share_resnet_layers=[0, 1, 2, 3, 4],
+                share_attn_layers=[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                share_key=True,
+                share_query=True,
+                share_value=False,
+                use_adain=True,
+                use_content_anchor=True,
+                output_dir=".",
+                c2s_layers=[0, 1],
+            )
+            temp_save_path = f"/root/autodl-tmp/CPSD/vis_out/seed_variation/{img_id}"
+            if not os.path.exists(temp_save_path):
+                os.makedirs(temp_save_path)
+            # save
+            result_img_style = imgs[1]
+            result_img = imgs[2]
+            result_img_style.save(f"{temp_save_path}/seed_{seed}_style.png")
+            result_img.save(f"{temp_save_path}/seed_{seed}.png")
+            print(f"Image saved as {temp_save_path}/seed_{seed}.png")

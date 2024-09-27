@@ -2,12 +2,12 @@ import os
 import subprocess
 
 # Define the base directories for the configurations
-config_dir_extraction = "/root/autodl-tmp/plug-and-play/configs/std"
-config_dir_gen = "/root/autodl-tmp/plug-and-play/configs/std_compare_gen"
+config_dir_extraction = "/root/autodl-tmp/plug-and-play/configs/picked_extract"
+config_dir_gen = "/root/autodl-tmp/plug-and-play/configs/picked"
 
 # Define the number of configurations to process
 # Ns = [11, 16, 19]
-Ns = range(1, 4)
+Ns = range(7, 8)
 
 
 # Function to run a command and print its output

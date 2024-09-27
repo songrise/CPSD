@@ -92,53 +92,8 @@ def my_adain(feat: T) -> T:
     feat = feat * feat_style_std + feat_style_mean
     feat[0] = feat_uncond_content
     feat[batch_size] = feat_cond_content
-    # err_1 = torch.norm(feat[1] - debug_feat_style_uncond)
-    # err_2 = torch.norm(feat[batch_size + 1] - debug_feat_style_cond)
     return feat
 
-
-def my_adain(feat: T) -> T:
-    """
-    AdaIN with negative branch
-    """
-    batch_size = feat.shape[0] // 2
-    feat_mean, feat_std = calc_mean_std(feat)
-    feat_uncond_content, feat_cond_content = feat[0], feat[batch_size]
-    feat_uncond_style, feat_cond_style = feat[1], feat[batch_size + 1]
-    ####AdaIN
-    # the uncond and cond are handled differently
-    feat_style_mean = torch.stack((feat_mean[1], feat_mean[batch_size + 1])).unsqueeze(
-        1
-    )
-    feat_style_mean = feat_style_mean.expand(2, batch_size, *feat_mean.shape[1:])
-    feat_style_mean = feat_style_mean.reshape(*feat_mean.shape)  # (6, D)
-
-    feat_style_std = torch.stack((feat_std[1], feat_std[batch_size + 1])).unsqueeze(1)
-    feat_style_std = feat_style_std.expand(2, batch_size, *feat_std.shape[1:])
-    feat_style_std = feat_style_std.reshape(*feat_std.shape)
-
-    feat = (feat - feat_mean) / feat_std
-    feat_pos = 1 * feat * feat_style_std + feat_style_mean
-
-    ###Negative AdaIN
-    feat_content_mean = torch.stack((feat_mean[0], feat_mean[batch_size])).unsqueeze(1)
-    feat_content_mean = feat_content_mean.expand(2, batch_size, *feat_mean.shape[1:])
-    feat_content_mean = feat_content_mean.reshape(*feat_mean.shape)
-
-    feat_content_std = torch.stack((feat_std[0], feat_std[batch_size])).unsqueeze(1)
-    feat_content_std = feat_content_std.expand(2, batch_size, *feat_std.shape[1:])
-    feat_content_std = feat_content_std.reshape(*feat_std.shape)
-
-    feat_neg = 0 * ((feat * feat_style_std) + (2 * feat_mean - feat_content_mean))
-
-    feat[0] = feat_uncond_content
-    feat[batch_size] = feat_cond_content
-    feat[1] = feat_uncond_style
-    feat[batch_size + 1] = feat_cond_style
-    feat[2] = (feat_pos + feat_neg)[2]
-    feat[batch_size + 2] = (feat_pos + feat_neg)[batch_size + 2]
-
-    return feat
 
 
 class DefaultAttentionProcessor(nn.Module):
@@ -183,7 +138,6 @@ class InjectAttentionProcessor(DefaultAttentionProcessor):
             self.key = torch.load(os.path.join(f, "key.pt"))
         with open(f"{self.injection_dir}_value.pt", "r") as f:
             self.value = torch.load(os.path.join(f, "value.pt"))
-        #!HARDCODED Mar 20: need init a processor for the self-attn in each of transformer block in upsampling path
 
     def __call__(
         self,
@@ -395,7 +349,7 @@ class PnPAttentionProcessor(DefaultAttentionProcessor):
         return hidden_states
 
 
-class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
+class ArtistAttentionProcessor(DefaultAttentionProcessor):
     def __init__(
         self,
         inject_query: bool = True,
@@ -404,7 +358,7 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         use_adain: bool = False,
         name: str = None,
         temp_dump=False,
-        temp_content_to_style_injection=False,
+        use_content_to_style_injection=False,
     ):
         super().__init__()
 
@@ -413,10 +367,10 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
         self.inject_value = inject_value
         self.share_enabled = True
         self.use_adain = use_adain
-        #!HARDCODED Mar 20: need init a processor for the self-attn in each of transformer block in upsampling path
+
         self.DEBUG_dump_attn = temp_dump
         self.__custom_name = name
-        self.temp_content_to_style_injection = temp_content_to_style_injection
+        self.temp_content_to_style_injection = use_content_to_style_injection
 
     def __call__(
         self,
@@ -485,7 +439,7 @@ class DisentangledPnPAttentionProcessor(DefaultAttentionProcessor):
             if self.inject_query:
                 if self.use_adain:
                     query = my_adain(query)
-                    #!HARDCODED Jul 05: v to the style branch
+
                     if self.temp_content_to_style_injection:
                         content_v_uncond = value[0, ...].unsqueeze(0)
                         content_v_cond = value[batch_size, ...].unsqueeze(0)
@@ -867,7 +821,7 @@ def register_attention_processors(
     pipe,
     base_dir: str = None,
     disentangle: bool = False,
-    attn_mode: str = "disentangled_pnp",
+    attn_mode: str = "artist",
     resnet_mode: str = "hidden",
     share_resblock: bool = True,
     share_attn: bool = True,
@@ -987,7 +941,7 @@ def register_attention_processors(
                     print(
                         f"Shared processor set for self-attention in block layer {layer_idx_attn}"
                     )
-                elif attn_mode == "disentangled_pnp":
+                elif attn_mode == "artist":
                     if (
                         share_attn_layers is not None
                         and layer_idx_attn in share_attn_layers
@@ -996,24 +950,24 @@ def register_attention_processors(
                             content_to_style = True
                         else:
                             content_to_style = False
-                        pnp_inject_processor = DisentangledPnPAttentionProcessor(
+                        pnp_inject_processor = ArtistAttentionProcessor(
                             inject_query=share_query,
                             inject_key=share_key,
-                            inject_value=share_value,  # or layer_idx_attn < 1,  # todo why
+                            inject_value=share_value,  #
                             use_adain=use_adain,
                             name=f"layer_{layer_idx_attn}_self",
                             temp_dump=False,
-                            temp_content_to_style_injection=content_to_style,
+                            use_content_to_style_injection=content_to_style,
                         )
                         self_attn.set_processor(pnp_inject_processor)
                         print(
                             f"Disentangled Pnp inject processor set for self-attention in layer {layer_idx_attn} with c2s={content_to_style}"
                         )
                         if share_cross_attn:
-                            cross_attn_processor = DisentangledPnPAttentionProcessor(
+                            cross_attn_processor = ArtistAttentionProcessor(
                                 inject_query=False,
                                 inject_key=True,
-                                inject_value=True,  # or layer_idx_attn < 1,  # todo why
+                                inject_value=True,
                                 use_adain=False,
                                 name=f"layer_{layer_idx_attn}_cross",
                                 temp_dump=False,
